@@ -1,38 +1,112 @@
 #!/usr/bin/env python3
 """
 Avito.ma Multi-City Apartment Scraper
-Cities: Casablanca, Agadir, Marrakech, Tanger, Rabat, Mohammedia
-Output: data.json  (place next to index.html)
+Uses requests + BeautifulSoup — no browser needed, much faster.
 
-Install:  pip install playwright && playwright install chromium
-Run all:  python scraper_avito.py
-One city: python scraper_avito.py --city Casablanca
-Images:   python scraper_avito.py --images   (slower, fetches galleries)
-Multi-URL:python scraper_avito.py --multi    (single combined URL)
+URL: https://www.avito.ma/fr/maroc/appartements-à_vendre?o=2&cities=15,8,12,5,90,13
+Pages: o=2 through o=10
+
+Install:
+    pip install requests beautifulsoup4
+
+Run:
+    python scraper_avito.py              # all pages
+    python scraper_avito.py --pages 3    # first 3 pages only (for testing)
 """
 
 import json, re, time, random, argparse
 from datetime import datetime
-from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
+import requests
+from bs4 import BeautifulSoup
 
-OUTPUT   = "data.json"
-PAGES    = range(1, 11)
-HEADLESS = True
+# ── Config ─────────────────────────────────────────────────────────────
+OUTPUT    = "data.json"
+BASE_URL  = "https://www.avito.ma/fr/maroc/appartements-%C3%A0_vendre"
+CITY_PARAM = "cities=15,8,12,5,90,13"
+# Pages start at o=2 on Avito (o=1 = first page without param)
+PAGE_RANGE = range(2, 11)   # o=2 … o=10
 
-MULTI_CITY_URL = (
-    "https://www.avito.ma/fr/maroc/appartements-%C3%A0_vendre"
-    "?cities=15,8,12,5,90,13"
-)
-
-CITY_URLS = {
-    "Casablanca": "https://www.avito.ma/fr/casablanca/appartements-%C3%A0_vendre",
-    "Agadir":     "https://www.avito.ma/fr/agadir/appartements-%C3%A0_vendre",
-    "Marrakech":  "https://www.avito.ma/fr/marrakech/appartements-%C3%A0_vendre",
-    "Tanger":     "https://www.avito.ma/fr/tanger/appartements-%C3%A0_vendre",
-    "Rabat":      "https://www.avito.ma/fr/rabat/appartements-%C3%A0_vendre",
-    "Mohammedia": "https://www.avito.ma/fr/mohammedia/appartements-%C3%A0_vendre",
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/121.0.0.0 Safari/537.36"
+    ),
+    "Accept-Language": "fr-FR,fr;q=0.9,ar;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Referer": "https://www.avito.ma/",
+    "DNT": "1",
 }
 
+SESSION = requests.Session()
+SESSION.headers.update(HEADERS)
+
+# ── City detection from URL path / text ────────────────────────────────
+CITY_KEYWORDS = {
+    "casablanca": "Casablanca",
+    "anfa":       "Casablanca",
+    "maarif":     "Casablanca",
+    "ain_diab":   "Casablanca",
+    "ain_chock":  "Casablanca",
+    "hay_mohammadi": "Casablanca",
+    "val_fleuri": "Casablanca",
+    "gauthier":   "Casablanca",
+    "racine":     "Casablanca",
+    "californie": "Casablanca",
+    "bourgogne":  "Casablanca",
+    "hay_hassani":"Casablanca",
+    "ain_sebaa":  "Casablanca",
+    "sidi_bernoussi": "Casablanca",
+    "roches_noires":  "Casablanca",
+    "palmier":    "Casablanca",
+    "oasis":      "Casablanca",
+    "oulfa":      "Casablanca",
+    "sidi_maarouf": "Casablanca",
+    "moulay_rachid": "Casablanca",
+    "derb_sultan": "Casablanca",
+    "sbata":      "Casablanca",
+    "c.i.l":      "Casablanca",
+    "2_mars":     "Casablanca",
+    "nassim":     "Casablanca",
+    "les_princesses": "Casablanca",
+    "maârif":     "Casablanca",
+    "agadir":     "Agadir",
+    "marrakech":  "Marrakech",
+    "guéliz":     "Marrakech",
+    "gueliz":     "Marrakech",
+    "hivernage":  "Marrakech",
+    "es_saada":   "Marrakech",
+    "hay_izdihar":"Marrakech",
+    "mabrouka":   "Marrakech",
+    "rouidat":    "Marrakech",
+    "allal_el_fassi": "Marrakech",
+    "route_de_casablanca": "Marrakech",
+    "route_de_tahanaoute": "Marrakech",
+    "route_d_amezmiz": "Marrakech",
+    "targa":      "Marrakech",
+    "tanger":     "Tanger",
+    "mesnana":    "Tanger",
+    "manar":      "Tanger",
+    "malabata":   "Tanger",
+    "rabat":      "Rabat",
+    "souissi":    "Rabat",
+    "agdal":      "Rabat",
+    "hay_riad":   "Rabat",
+    "mohammedia": "Mohammedia",
+    "la_siesta":  "Mohammedia",
+}
+
+# Display text in "Appartements dans <City>, <Quartier>"
+CITY_TEXT_MAP = {
+    "Casablanca":  "Casablanca",
+    "Agadir":      "Agadir",
+    "Marrakech":   "Marrakech",
+    "Tanger":      "Tanger",
+    "Rabat":       "Rabat",
+    "Mohammedia":  "Mohammedia",
+}
+
+# ── Bounding boxes: [lat_min, lat_max, lng_min, lng_max] ───────────────
 QUARTIER_BOUNDS = {
     # Casablanca
     "Ain Diab":       (33.582, 33.596, -7.705, -7.665),
@@ -65,35 +139,34 @@ QUARTIER_BOUNDS = {
     "Ben M'Sick":     (33.561, 33.577, -7.616, -7.590),
     "Sbata":          (33.570, 33.585, -7.607, -7.582),
     # Agadir
-    "Founty":              (30.388, 30.406, -9.625, -9.595),
-    "Talborjt":            (30.414, 30.430, -9.600, -9.575),
-    "Hay Almassira":       (30.395, 30.415, -9.575, -9.545),
-    "Centre Agadir":       (30.418, 30.432, -9.592, -9.568),
-    "Dakhla":              (30.402, 30.418, -9.605, -9.580),
-    "Anza":                (30.440, 30.465, -9.610, -9.580),
+    "Founty":         (30.388, 30.406, -9.625, -9.595),
+    "Talborjt":       (30.414, 30.430, -9.600, -9.575),
+    "Hay Almassira":  (30.395, 30.415, -9.575, -9.545),
+    "Centre Agadir":  (30.418, 30.432, -9.592, -9.568),
+    "Dakhla":         (30.402, 30.418, -9.605, -9.580),
+    "Anza":           (30.440, 30.465, -9.610, -9.580),
     # Marrakech
-    "Gueliz":              (31.630, 31.648, -8.022, -7.992),
-    "Hivernage":           (31.614, 31.632, -8.010, -7.985),
-    "Medina":              (31.618, 31.636, -7.998, -7.975),
-    "Palmeraie":           (31.638, 31.665, -7.960, -7.925),
-    "Majorelle":           (31.636, 31.650, -8.002, -7.978),
-    "Targa":               (31.596, 31.616, -8.020, -7.995),
-    "Massira":             (31.598, 31.618, -7.998, -7.970),
+    "Gueliz":         (31.630, 31.648, -8.022, -7.992),
+    "Hivernage":      (31.614, 31.632, -8.010, -7.985),
+    "Medina":         (31.618, 31.636, -7.998, -7.975),
+    "Palmeraie":      (31.638, 31.665, -7.960, -7.925),
+    "Majorelle":      (31.636, 31.650, -8.002, -7.978),
+    "Targa":          (31.596, 31.616, -8.020, -7.995),
+    "Massira":        (31.598, 31.618, -7.998, -7.970),
     # Tanger
-    "Malabata":            (35.778, 35.796, -5.778, -5.745),
-    "Centre Tanger":       (35.765, 35.782, -5.820, -5.790),
-    "Marshan":             (35.778, 35.795, -5.825, -5.798),
-    "Iberia":              (35.756, 35.775, -5.812, -5.785),
-    "Achakar":             (35.740, 35.760, -5.870, -5.840),
+    "Malabata":       (35.778, 35.796, -5.778, -5.745),
+    "Centre Tanger":  (35.765, 35.782, -5.820, -5.790),
+    "Marshan":        (35.778, 35.795, -5.825, -5.798),
+    "Iberia":         (35.756, 35.775, -5.812, -5.785),
     # Rabat
-    "Agdal":               (33.990, 34.010, -6.860, -6.830),
-    "Hassan":              (34.010, 34.030, -6.850, -6.820),
-    "Souissi":             (33.990, 34.015, -6.825, -6.795),
-    "Les Orangers":        (34.005, 34.025, -6.870, -6.840),
-    "Yacoub El Mansour":   (33.975, 33.998, -6.875, -6.845),
+    "Agdal":          (33.990, 34.010, -6.860, -6.830),
+    "Hassan":         (34.010, 34.030, -6.850, -6.820),
+    "Souissi":        (33.990, 34.015, -6.825, -6.795),
+    "Les Orangers":   (34.005, 34.025, -6.870, -6.840),
+    "Yacoub El Mansour": (33.975, 33.998, -6.875, -6.845),
     # Mohammedia
-    "Centre Mohammedia":   (33.688, 33.706, -7.402, -7.372),
-    "Ain Harrouda":        (33.660, 33.682, -7.428, -7.398),
+    "Centre Mohammedia": (33.688, 33.706, -7.402, -7.372),
+    "Ain Harrouda":   (33.660, 33.682, -7.428, -7.398),
 }
 
 CITY_BOUNDS = {
@@ -105,277 +178,240 @@ CITY_BOUNDS = {
     "Mohammedia":  (33.660, 33.720, -7.430, -7.360),
 }
 
-QUARTIER_ALIASES = {
-    "belvedere":"Belvedere","belvédère":"Belvedere",
-    "triangle d'or":"Triangle d'Or","triangle dor":"Triangle d'Or",
-    "sidi bernoussi":"Sidi Bernoussi","bernoussi":"Sidi Bernoussi",
-    "ain diab":"Ain Diab","ain sebaa":"Ain Sebaa","aïn sebaâ":"Ain Sebaa",
-    "hay hassani":"Hay Hassani","hay mohammadi":"Hay Mohammadi",
-    "hay riad":"Hay Riad","sidi maarouf":"Sidi Maarouf",
-    "moulay rachid":"Moulay Rachid","sidi belyout":"Sidi Belyout",
-    "roches noires":"Roches Noires","val fleuri":"Val Fleuri",
-    "centre ville":"Centre Ville","casa anfa":"Casa Anfa",
-    "ain chock":"Ain Chock","ben m'sick":"Ben M'Sick","ben msick":"Ben M'Sick",
-    "californie":"Californie","bourgogne":"Bourgogne","palmier":"Palmier",
-    "gauthier":"Gauthier","maarif":"Maarif","racine":"Racine",
-    "anfa":"Anfa","oasis":"Oasis","oulfa":"Oulfa","sbata":"Sbata","cil":"CIL",
-    "talborjt":"Talborjt","founty":"Founty","hay almassira":"Hay Almassira",
-    "anza":"Anza","dakhla":"Dakhla",
-    "gueliz":"Gueliz","guéliz":"Gueliz","hivernage":"Hivernage",
-    "médina":"Medina","medina":"Medina","palmeraie":"Palmeraie",
-    "majorelle":"Majorelle","targa":"Targa","massira":"Massira",
-    "malabata":"Malabata","marshan":"Marshan","iberia":"Iberia","achakar":"Achakar",
-    "centre tanger":"Centre Tanger",
-    "agdal":"Agdal","hassan":"Hassan","souissi":"Souissi",
-    "les orangers":"Les Orangers","yacoub el mansour":"Yacoub El Mansour",
-    "centre mohammedia":"Centre Mohammedia","ain harrouda":"Ain Harrouda",
-}
-
-
 def coords_for(quartier, city):
     box = QUARTIER_BOUNDS.get(quartier) or CITY_BOUNDS.get(city)
     if not box:
         return None, None
-    lat_min, lat_max, lng_min, lng_max = box
-    return round(random.uniform(lat_min, lat_max), 6), round(random.uniform(lng_min, lng_max), 6)
+    a, b, c, d = box
+    return round(random.uniform(a, b), 6), round(random.uniform(c, d), 6)
 
-def guess_quartier(text):
-    lower = text.lower()
-    for alias in sorted(QUARTIER_ALIASES, key=len, reverse=True):
-        if alias in lower:
-            return QUARTIER_ALIASES[alias]
-    return None
 
-def guess_city_from_text(text):
-    lower = text.lower()
-    for city in ["casablanca","agadir","marrakech","tanger","rabat","mohammedia"]:
-        if city in lower:
-            return city.capitalize()
-    return None
-
+# ── Parse helpers ──────────────────────────────────────────────────────
 def clean_price(text):
-    if not text: return None
-    nums = re.sub(r"[^\d]", "", text)
-    return int(nums) if nums else None
+    """Extract first numeric price from text like '5 500 000 DH' or '2 100 000 DH11 672 DH / mois'"""
+    if not text:
+        return None
+    # Match the first big number before DH
+    m = re.search(r'([\d][\d\s]*)\s*DH', text)
+    if not m:
+        return None
+    nums = re.sub(r'\s', '', m.group(1))
+    try:
+        return int(nums)
+    except ValueError:
+        return None
 
 def clean_surface(text):
-    if not text: return None
-    m = re.search(r"(\d+)\s*m", text, re.IGNORECASE)
+    m = re.search(r'(\d+)\s*m[²2]', text, re.IGNORECASE)
     return int(m.group(1)) if m else None
 
 def clean_rooms(text):
-    if not text: return None
-    m = re.search(r"(\d+)\s*(pi[eè]ces?|ch(?:ambres?)?\.?)", text, re.IGNORECASE)
-    return int(m.group(1)) if m else None
+    # Avito shows: "3 4 260 m²" — first number = bedrooms, but also "3 pièces"
+    m = re.search(r'(\d+)\s*pi[eè]ces?', text, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    # Try "X ch" pattern
+    m = re.search(r'(\d+)\s*ch(?:ambres?)?', text, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    return None
 
-def scrape_listing_images(img_page, url):
-    images = []
-    if not url: return images
-    try:
-        img_page.goto(url, wait_until="domcontentloaded", timeout=20_000)
-        img_page.wait_for_timeout(1500)
-        for sel in [
-            "[class*='slick-slide'] img","[class*='gallery'] img",
-            "[class*='Gallery'] img","[class*='photo'] img","img[class*='sc-']",
-        ]:
-            imgs = img_page.query_selector_all(sel)
-            srcs = []
-            for img in imgs:
-                src = img.get_attribute("src") or img.get_attribute("data-src") or ""
-                if src and "avito" in src and src not in srcs and "placeholder" not in src:
-                    srcs.append(src)
-            if srcs:
-                return srcs[:8]
-    except Exception as e:
-        print(f"      ! Image error: {e}")
-    return images
+def city_from_url(href):
+    """Derive city from the avito URL path segment."""
+    path = href.lower()
+    for keyword, city in CITY_KEYWORDS.items():
+        if f"/{keyword}/" in path:
+            return city
+    return None
 
-def scrape_page(page, base_url, city, page_num, fetch_images=False, img_page=None):
-    url = f"{base_url}?o={page_num}"
-    print(f"  [{city or 'ALL'}] page {page_num} -> {url[:60]}...")
-    for attempt in range(3):
+def city_from_location_text(location_str):
+    """Parse 'Appartements dans Casablanca, Anfa' or 'Appartements dans Marrakech, Guéliz'"""
+    m = re.match(r"Appartements dans ([^,]+)", location_str or "")
+    if not m:
+        return None
+    raw = m.group(1).strip()
+    for key, val in CITY_TEXT_MAP.items():
+        if key.lower() in raw.lower():
+            return val
+    return raw.title()
+
+def quartier_from_location_text(location_str):
+    """Parse 'Appartements dans Casablanca, Anfa' -> 'Anfa'"""
+    m = re.match(r"Appartements dans [^,]+,\s*(.+)", location_str or "")
+    return m.group(1).strip().title() if m else None
+
+def quartier_from_url(href):
+    """Extract quartier from /fr/<quartier>/appartements/..."""
+    m = re.match(r'https://www\.avito\.ma/fr/([^/]+)/appartements/', href)
+    if not m:
+        return None
+    raw = m.group(1).replace("_", " ").replace("-", " ")
+    # Clean accented chars for matching
+    return raw.title()
+
+
+# ── Scrape one page ────────────────────────────────────────────────────
+def scrape_page(page_num):
+    url = f"{BASE_URL}?o={page_num}&{CITY_PARAM}"
+    print(f"  Fetching page {page_num}: {url}")
+
+    for attempt in range(4):
         try:
-            page.goto(url, wait_until="networkidle", timeout=35_000)
+            resp = SESSION.get(url, timeout=30)
+            resp.raise_for_status()
             break
-        except PWTimeout:
-            if attempt == 0:
-                try:
-                    page.goto(url, wait_until="domcontentloaded", timeout=20_000)
-                    page.wait_for_timeout(4000); break
-                except PWTimeout: pass
-            elif attempt == 2:
-                print(f"    ! Page {page_num} failed.")
-                return []
-            time.sleep(3)
-
-    cards = []
-    for sel in ["[data-listing-id]","article[data-listing-id]","li[data-listing-id]",
-                "[class*='ListingCell']","[class*='listing-cell']","article"]:
-        try:
-            page.wait_for_selector(sel, timeout=6000)
-            found = page.query_selector_all(sel)
-            found = [c for c in found if c.get_attribute("data-listing-id") or sel != "article"]
-            if found:
-                print(f"    -> {len(found)} cards via '{sel}'")
-                cards = found; break
-        except PWTimeout:
-            continue
-    if not cards:
-        print(f"    ! No cards found.")
+        except Exception as e:
+            wait = (attempt + 1) * 3
+            print(f"    Attempt {attempt+1} failed ({e}). Retrying in {wait}s...")
+            time.sleep(wait)
+    else:
+        print(f"    !! Page {page_num} failed after 4 attempts, skipping.")
         return []
 
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    # Every real listing is an <a> pointing to /fr/<quartier>/appartements/<title>_<id>.htm
+    listing_anchors = soup.find_all(
+        "a",
+        href=re.compile(r'^https://www\.avito\.ma/fr/[^/]+/appartements/[^/]+\.htm$')
+    )
+
+    # Deduplicate by href (some pages have duplicate anchors for same card)
+    seen_hrefs = set()
     listings = []
-    for card in cards:
-        try:
-            all_text = card.inner_text()
-            title = ""
-            for sel in ["h2","h3","[class*='title' i]","[class*='Title']"]:
-                el = card.query_selector(sel)
-                if el: title = el.inner_text().strip(); break
-            if not title: title = (card.get_attribute("title") or "").strip()
 
-            price_text = ""
-            for sel in ["[class*='price' i]","[class*='Price']","p[class*='sc-']","span[class*='sc-']"]:
-                el = card.query_selector(sel)
-                if el:
-                    t = el.inner_text().strip()
-                    if "DH" in t or re.search(r"\d{3}", t):
-                        price_text = t; break
-            if not price_text:
-                m = re.search(r"[\d\s]{4,}\s*DH", all_text)
-                price_text = m.group(0) if m else ""
+    for a in listing_anchors:
+        href = a.get("href", "")
+        # Skip immoneuf.avito.ma links
+        if "immoneuf" in href:
+            continue
+        if href in seen_hrefs:
+            continue
+        seen_hrefs.add(href)
 
-            price = clean_price(price_text)
-            link_el = card.query_selector("a[href]")
-            href = link_el.get_attribute("href") if link_el else ""
-            link = ("https://www.avito.ma" + href) if href and href.startswith("/") else href
+        text = a.get_text("\n", strip=True)
+        lines = [l.strip() for l in text.split("\n") if l.strip()]
 
-            location_text = ""
-            for sel in ["[class*='location' i]","[class*='Location']","[class*='address' i]"]:
-                el = card.query_selector(sel)
-                if el: location_text = el.inner_text().strip(); break
+        # Extract image URL (content.avito.ma/classifieds)
+        img_tag = a.find("img", src=re.compile(r'content\.avito\.ma/classifieds'))
+        img_src = img_tag.get("src", "") if img_tag else ""
+        # Also check data-src
+        if not img_src:
+            img_tag = a.find("img", attrs={"data-src": re.compile(r'content\.avito\.ma')})
+            img_src = img_tag.get("data-src", "") if img_tag else ""
 
-            # Thumbnail from card
-            thumb = ""
-            for sel in ["img[src*='avito']","img[data-src*='avito']","img"]:
-                img_el = card.query_selector(sel)
-                if img_el:
-                    thumb = img_el.get_attribute("src") or img_el.get_attribute("data-src") or ""
-                    if thumb and "placeholder" not in thumb: break
-                    thumb = ""
+        # Find "Appartements dans <City>, <Quartier>" line
+        location_line = next(
+            (l for l in lines if l.startswith("Appartements dans")),
+            None
+        )
+        city    = city_from_location_text(location_line) or city_from_url(href)
+        quartier = quartier_from_location_text(location_line) or quartier_from_url(href)
 
-            surface  = clean_surface(all_text)
-            rooms    = clean_rooms(all_text)
-            quartier = guess_quartier(title + " " + location_text + " " + all_text)
-            detected_city = city or guess_city_from_text(title + " " + location_text + " " + all_text)
-            lat, lng = coords_for(quartier, detected_city)
-            price_m2 = round(price / surface) if price and surface and surface > 0 else None
+        # Title: the line that is clearly the listing title
+        # It's usually after the location line and before the stats
+        title = ""
+        if location_line:
+            idx = lines.index(location_line)
+            if idx + 1 < len(lines):
+                title = lines[idx + 1]
 
-            images = []
-            if fetch_images and img_page and link:
-                images = scrape_listing_images(img_page, link)
-                time.sleep(random.uniform(0.5, 1.2))
-            elif thumb:
-                images = [thumb]
+        # Price: find "X DH" or "Demander le prix"
+        price_raw = next(
+            (l for l in lines if "DH" in l or "Demander le prix" in l),
+            ""
+        )
+        price = clean_price(price_raw) if "DH" in price_raw else None
 
-            if not title and not price: continue
-            listings.append({
-                "title": title, "city": detected_city, "quartier": quartier,
-                "lat": lat, "lng": lng, "price": price, "surface": surface,
-                "rooms": rooms, "price_m2": price_m2, "location": location_text,
-                "link": link, "images": images, "page": page_num,
-                "scraped_at": datetime.now().isoformat(timespec="seconds"),
-            })
-        except Exception as exc:
-            print(f"    ! Card error: {exc}")
+        # Surface and rooms from full text
+        full_text = " ".join(lines)
+        surface = clean_surface(full_text)
+        rooms   = clean_rooms(full_text)
+        price_m2 = round(price / surface) if price and surface and surface > 0 else None
+
+        lat, lng = coords_for(quartier, city)
+
+        listings.append({
+            "title":      title,
+            "city":       city,
+            "quartier":   quartier,
+            "lat":        lat,
+            "lng":        lng,
+            "price":      price,
+            "surface":    surface,
+            "rooms":      rooms,
+            "price_m2":   price_m2,
+            "location":   location_line or "",
+            "link":       href,
+            "images":     [img_src] if img_src else [],
+            "page":       page_num,
+            "scraped_at": datetime.now().isoformat(timespec="seconds"),
+        })
+
+    print(f"    -> {len(listings)} listings extracted")
     return listings
 
 
+# ── Main ───────────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--city", help="Single city to scrape", default=None)
-    parser.add_argument("--images", action="store_true", help="Fetch full image galleries (slower)")
-    parser.add_argument("--multi", action="store_true", help="Use combined multi-city URL")
+    parser = argparse.ArgumentParser(description="Avito.ma scraper — no browser needed")
+    parser.add_argument("--pages", type=int, default=None,
+                        help="Number of pages to scrape (default: all, o=2 to o=10)")
     args = parser.parse_args()
 
-    print("=" * 50)
-    print("  Avito.ma Multi-City Scraper")
-    print("=" * 50)
-
-    if args.city:
-        if args.city not in CITY_URLS:
-            print(f"Unknown city. Choose from: {', '.join(CITY_URLS)}")
-            return
-        cities_to_scrape = {args.city: CITY_URLS[args.city]}
-    elif args.multi:
-        cities_to_scrape = {"ALL": MULTI_CITY_URL}
+    if args.pages:
+        pages = range(2, 2 + args.pages)
     else:
-        cities_to_scrape = CITY_URLS
+        pages = PAGE_RANGE
+
+    print("=" * 55)
+    print("  Avito.ma Scraper  |  requests + BeautifulSoup")
+    print(f"  URL: {BASE_URL}?o=N&{CITY_PARAM}")
+    print(f"  Pages: o={pages.start} → o={pages.stop - 1}")
+    print("=" * 55)
 
     all_listings = []
 
-    with sync_playwright() as pw:
-        browser = pw.chromium.launch(
-            headless=HEADLESS,
-            args=["--no-sandbox","--disable-blink-features=AutomationControlled"],
-        )
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-            viewport={"width":1280,"height":900},
-            locale="fr-MA",
-            extra_http_headers={"Accept-Language":"fr-FR,fr;q=0.9"},
-        )
-        if not args.images:
-            context.route("**/*", lambda route: (
-                route.abort() if route.request.resource_type in ("image","font","media","stylesheet")
-                else route.continue_()
-            ))
+    for page_num in pages:
+        batch = scrape_page(page_num)
+        all_listings.extend(batch)
+        print(f"  Total so far: {len(all_listings)}")
+        # Polite delay between pages
+        if page_num < pages.stop - 1:
+            delay = random.uniform(1.5, 3.5)
+            print(f"  Waiting {delay:.1f}s...")
+            time.sleep(delay)
 
-        page = context.new_page()
-        img_page = context.new_page() if args.images else None
-
-        try:
-            page.goto("https://www.avito.ma", wait_until="domcontentloaded", timeout=20_000)
-            page.wait_for_timeout(1500)
-            for label in ["Accepter","Accept","J'accepte","OK","Fermer"]:
-                btn = page.query_selector(f"button:has-text('{label}')")
-                if btn: btn.click(); print(f"  Cookie dismissed ({label})"); break
-        except Exception:
-            pass
-
-        for city, base_url in cities_to_scrape.items():
-            print(f"\n{'─'*40}  {city}  {'─'*40}")
-            city_total = []
-            for page_num in PAGES:
-                batch = scrape_page(page, base_url, None if city=="ALL" else city,
-                                    page_num, args.images, img_page)
-                city_total.extend(batch)
-                all_listings.extend(batch)
-                print(f"  Page {page_num}: +{len(batch)} | City: {len(city_total)} | Total: {len(all_listings)}")
-                time.sleep(random.uniform(2.0, 4.0))
-            print(f"  {city}: {len(city_total)} listings collected")
-
-        browser.close()
-
+    # Assign IDs
     for i, l in enumerate(all_listings, 1):
         l["id"] = i
 
+    # Stats by city
+    from collections import Counter
+    city_counts = Counter(l["city"] for l in all_listings)
+    print("\n  Listings by city:")
+    for city, count in sorted(city_counts.items(), key=lambda x: -x[1]):
+        print(f"    {city or 'Unknown':15s}: {count}")
+
     output = {
         "meta": {
-            "source": "avito.ma",
-            "cities": list(cities_to_scrape.keys()),
-            "total": len(all_listings),
+            "source":     "avito.ma",
+            "url":        f"{BASE_URL}?{CITY_PARAM}",
+            "cities":     ["Casablanca", "Agadir", "Marrakech", "Tanger", "Rabat", "Mohammedia"],
+            "total":      len(all_listings),
             "scraped_at": datetime.now().isoformat(timespec="seconds"),
         },
         "listings": all_listings,
     }
+
     with open(OUTPUT, "w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
 
-    print(f"\n{'='*50}")
-    print(f"  DONE — {len(all_listings)} listings -> {OUTPUT}")
-    print(f"  Copy data.json next to index.html and refresh the map.")
-    print(f"{'='*50}")
+    print(f"\n{'='*55}")
+    print(f"  DONE — {len(all_listings)} listings saved to {OUTPUT}")
+    print(f"  Place data.json next to index.html and refresh the map.")
+    print(f"{'='*55}")
+
 
 if __name__ == "__main__":
     main()
