@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>CasaMap — Appartements à Vendre</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+:root{
+  --ink:#1a1c20; --paper:#f6f4ef; --sand:#ede9e0; --line:#d8d4ca;
+  --muted:#8a8880; --accent:#c94f2c; --teal:#1e7b6e;
+  --font:'DM Sans',sans-serif; --mono:'DM Mono',monospace;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;font-family:var(--font);background:var(--paper);color:var(--ink)}
+#app{display:grid;grid-template-columns:330px 1fr;grid-template-rows:50px 1fr;height:100vh}
+
+/* Topbar */
+#topbar{grid-column:1/-1;display:flex;align-items:center;gap:12px;padding:0 18px;
+  background:var(--ink);color:var(--paper);border-bottom:1px solid #2a2c30}
+.logo{font-size:16px;font-weight:700;letter-spacing:.02em}
+.logo em{color:var(--accent);font-style:normal}
+.sub{font-size:10px;color:#777;font-family:var(--mono);flex:1}
+
+/* Last updated timestamp */
+#last-updated{font-size:9px;color:#666;font-family:var(--mono);white-space:nowrap}
+
+/* Update button */
+#update-btn{
+  display:flex;align-items:center;gap:6px;
+  background:transparent;color:#aaa;border:1px solid #444;
+  padding:4px 12px;border-radius:4px;cursor:pointer;font-size:10px;
+  font-family:var(--mono);transition:.2s;white-space:nowrap;
+}
+#update-btn:hover{background:#1e7b6e;color:#fff;border-color:#1e7b6e}
+#update-btn.loading{background:#333;color:#666;cursor:not-allowed;pointer-events:none}
+#update-btn .spin{display:none;animation:spin .8s linear infinite}
+#update-btn.loading .spin{display:inline}
+#update-btn.loading .icon{display:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+#badge{background:var(--accent);color:#fff;font-family:var(--mono);
+  font-size:11px;padding:3px 10px;border-radius:20px;white-space:nowrap}
+#reset-btn{display:none;background:transparent;color:#999;border:1px solid #444;
+  padding:3px 10px;border-radius:4px;cursor:pointer;font-size:10px;
+  font-family:var(--mono);transition:.15s}
+#reset-btn.on{display:block}
+#reset-btn:hover{background:#333;color:#fff}
+
+/* Error toast */
+#toast{
+  display:none;position:fixed;bottom:24px;left:50%;transform:translateX(-50%);
+  background:#c94f2c;color:#fff;padding:8px 18px;border-radius:6px;
+  font-family:var(--mono);font-size:11px;z-index:9999;box-shadow:0 4px 16px rgba(0,0,0,.2);
+}
+#toast.on{display:block}
+
+/* Sidebar */
+#sidebar{background:var(--paper);border-right:1px solid var(--line);
+  display:flex;flex-direction:column;overflow:hidden}
+
+/* Filters */
+#filters{padding:13px 14px 11px;border-bottom:1px solid var(--line);
+  display:flex;flex-direction:column;gap:8px}
+.fg label{display:block;font-size:9px;letter-spacing:.12em;color:var(--muted);
+  margin-bottom:3px;font-family:var(--mono);text-transform:uppercase}
+select{width:100%;background:#fff;color:var(--ink);border:1px solid var(--line);
+  padding:7px 10px;border-radius:5px;font-family:var(--font);font-size:12px;
+  appearance:none;cursor:pointer;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='7' viewBox='0 0 10 7'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23888' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right 9px center;padding-right:26px}
+select:focus{outline:none;border-color:var(--accent)}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+
+/* Quartier banner */
+#q-banner{display:none;align-items:center;justify-content:space-between;
+  padding:8px 14px;background:var(--accent);color:#fff;font-size:12px}
+#q-banner.on{display:flex}
+#q-banner small{font-family:var(--mono);font-size:10px;opacity:.85}
+#q-clear{background:none;border:1px solid rgba(255,255,255,.4);color:#fff;
+  padding:3px 9px;border-radius:3px;cursor:pointer;font-size:10px}
+#q-clear:hover{background:rgba(255,255,255,.2)}
+
+/* Panel */
+#panel{flex:1;overflow-y:auto;padding:9px;display:flex;flex-direction:column;gap:6px}
+#panel::-webkit-scrollbar{width:3px}
+#panel::-webkit-scrollbar-thumb{background:var(--line)}
+
+.card{background:#fff;border:1px solid var(--line);border-radius:7px;
+  padding:10px 12px 10px 14px;cursor:pointer;position:relative;
+  transition:border-color .15s,box-shadow .15s,transform .1s}
+.card:hover{border-color:var(--accent);box-shadow:0 2px 8px rgba(201,79,44,.1);transform:translateX(2px)}
+.card.active{border-color:var(--accent);background:#fff8f6}
+.tier-bar{position:absolute;left:0;top:0;bottom:0;width:3px;border-radius:7px 0 0 7px}
+.card-title{font-size:12px;font-weight:500;line-height:1.4;margin-bottom:5px}
+.card-tags{display:flex;flex-wrap:wrap;gap:4px}
+.tag{font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:3px;
+  border:1px solid var(--line);color:var(--muted);background:var(--sand)}
+.tag.p{background:#fff2ee;border-color:#f5b8a8;color:var(--accent)}
+.tag.m{background:#f0f8f4;border-color:#a8d8c8;color:var(--teal)}
+.empty{text-align:center;color:var(--muted);font-family:var(--mono);font-size:11px;padding:24px 0;line-height:1.8}
+
+/* Loading overlay on panel */
+#panel-loader{display:none;flex-direction:column;align-items:center;justify-content:center;
+  gap:10px;flex:1;color:var(--muted);font-family:var(--mono);font-size:11px}
+#panel-loader.on{display:flex}
+.loader-ring{width:28px;height:28px;border:2px solid var(--line);
+  border-top-color:var(--accent);border-radius:50%;animation:spin .7s linear infinite}
+
+/* Map */
+#map{position:relative}
+.leaflet-container{background:#b8d8ea}
+
+/* Tooltip */
+.leaflet-tooltip{background:var(--ink)!important;color:#f0f0f0!important;
+  border:none!important;font-family:var(--font)!important;font-size:11px!important;
+  border-radius:5px!important;padding:5px 10px!important;
+  box-shadow:0 2px 8px rgba(0,0,0,.2)!important;pointer-events:none!important}
+.leaflet-tooltip::before{display:none!important}
+
+/* Popup */
+.leaflet-popup-content-wrapper{border-radius:8px!important;padding:0!important;
+  box-shadow:0 4px 20px rgba(0,0,0,.12)!important;border:1px solid var(--line)!important}
+.leaflet-popup-content{margin:0!important}
+.leaflet-popup-tip-container{display:none}
+.qpop{font-family:var(--font);min-width:200px}
+.qpop h3{font-size:13px;font-weight:700;padding:10px 13px 7px;border-bottom:1px solid var(--line)}
+.qpop .rows{padding:8px 13px 10px;display:flex;flex-direction:column;gap:4px}
+.qpop .row{display:flex;justify-content:space-between;font-size:11px;color:#555}
+.qpop .row .v{font-weight:600;font-family:var(--mono);font-size:10px;color:var(--ink)}
+
+/* Legend */
+#legend{position:absolute;bottom:18px;right:10px;z-index:1000;
+  background:rgba(246,244,239,.97);border:1px solid var(--line);
+  border-radius:8px;padding:10px 13px;backdrop-filter:blur(4px);
+  box-shadow:0 2px 12px rgba(0,0,0,.08)}
+#legend h4{font-size:9px;letter-spacing:.12em;color:var(--muted);
+  font-family:var(--mono);margin-bottom:7px;text-transform:uppercase}
+.lr{display:flex;align-items:center;gap:8px;margin-bottom:4px;
+  font-size:10px;font-family:var(--mono);color:#555}
+.lsq{width:12px;height:12px;border-radius:50%;flex-shrink:0}
+
+/* Dot */
+.dot{width:8px;height:8px;border-radius:50%;border:1.5px solid rgba(255,255,255,.9);
+  box-shadow:0 1px 4px rgba(0,0,0,.35)}
+</style>
+</head>
+<body>
+<div id="app">
+
+<header id="topbar">
+  <div class="logo">Casa<em>Map</em></div>
+  <div class="sub">// Appartements à vendre &middot; Casablanca &middot; avito.ma</div>
+  <div id="last-updated"></div>
+  <button id="reset-btn" onclick="resetAll()">&#10005; Réinitialiser</button>
+  <button id="update-btn" onclick="loadData(true)">
+    <span class="icon">&#8635;</span>
+    <svg class="spin" width="12" height="12" viewBox="0 0 12 12" fill="none">
+      <circle cx="6" cy="6" r="4.5" stroke="#666" stroke-width="1.5" stroke-dasharray="14 8"/>
+    </svg>
+    Actualiser les données
+  </button>
+  <div id="badge">— annonces</div>
+</header>
+
+<aside id="sidebar">
+  <div id="filters">
+    <div class="fg">
+      <label>Quartier</label>
+      <select id="sel-q"><option value="">Tous les quartiers</option></select>
+    </div>
+    <div class="fg">
+      <label>Pièces</label>
+      <select id="sel-rooms">
+        <option value="">Toutes les pièces</option>
+        <option value="1">Studio (1 pièce)</option>
+        <option value="2">2 pièces</option>
+        <option value="3">3 pièces</option>
+        <option value="4">4 pièces</option>
+        <option value="5">5 pièces +</option>
+      </select>
+    </div>
+    <div class="row2">
+      <div class="fg">
+        <label>Budget max</label>
+        <select id="sel-price">
+          <option value="">Tout prix</option>
+          <option value="0-500000">&lt; 500 000 DH</option>
+          <option value="0-1000000">&lt; 1 M DH</option>
+          <option value="0-2000000">&lt; 2 M DH</option>
+          <option value="1000000-3000000">1M – 3M DH</option>
+          <option value="2000000-5000000">2M – 5M DH</option>
+          <option value="3000000-99999999">&gt; 3M DH</option>
+        </select>
+      </div>
+      <div class="fg">
+        <label>Surface</label>
+        <select id="sel-surf">
+          <option value="">Toute surface</option>
+          <option value="0-50">&lt; 50 m²</option>
+          <option value="0-80">&lt; 80 m²</option>
+          <option value="50-100">50 – 100 m²</option>
+          <option value="80-150">80 – 150 m²</option>
+          <option value="120-200">120 – 200 m²</option>
+          <option value="150-9999">&gt; 150 m²</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div id="q-banner">
+    <div>
+      <strong id="q-name"></strong>
+      <br><small id="q-count"></small>
+    </div>
+    <button id="q-clear" onclick="clearQ()">&#10005; Tout</button>
+  </div>
+
+  <div id="panel-loader" class="on">
+    <div class="loader-ring"></div>
+    Chargement des annonces…
+  </div>
+  <div id="panel"></div>
+</aside>
+
+<div id="map"></div>
+</div>
+
+<div id="legend">
+  <h4>Prix / m²</h4>
+  <div class="lr"><div class="lsq" style="background:#2e8b4a"></div>&lt; 10 000 DH</div>
+  <div class="lr"><div class="lsq" style="background:#1a7055"></div>10 – 14 k</div>
+  <div class="lr"><div class="lsq" style="background:#b07d10"></div>14 – 18 k</div>
+  <div class="lr"><div class="lsq" style="background:#b85020"></div>18 – 24 k</div>
+  <div class="lr"><div class="lsq" style="background:#a81818"></div>&gt; 24 000 DH</div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const QUARTIER_GEO = {"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {"name": "Ain Diab"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.705, 33.592], [-7.698, 33.596], [-7.685, 33.602], [-7.675, 33.598], [-7.67, 33.592], [-7.678, 33.586], [-7.69, 33.584], [-7.702, 33.587], [-7.705, 33.592]]]}}, {"type": "Feature", "properties": {"name": "Anfa"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.672, 33.59], [-7.665, 33.596], [-7.655, 33.599], [-7.645, 33.596], [-7.642, 33.588], [-7.65, 33.582], [-7.662, 33.58], [-7.672, 33.584], [-7.672, 33.59]]]}}, {"type": "Feature", "properties": {"name": "Racine"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.652, 33.595], [-7.645, 33.599], [-7.638, 33.597], [-7.635, 33.591], [-7.64, 33.586], [-7.649, 33.586], [-7.654, 33.591], [-7.652, 33.595]]]}}, {"type": "Feature", "properties": {"name": "Gauthier"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.638, 33.593], [-7.631, 33.597], [-7.624, 33.595], [-7.621, 33.589], [-7.626, 33.584], [-7.634, 33.584], [-7.639, 33.588], [-7.638, 33.593]]]}}, {"type": "Feature", "properties": {"name": "Maarif"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.645, 33.59], [-7.638, 33.594], [-7.627, 33.592], [-7.623, 33.586], [-7.628, 33.58], [-7.638, 33.578], [-7.645, 33.583], [-7.645, 33.59]]]}}, {"type": "Feature", "properties": {"name": "Californie"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.65, 33.582], [-7.643, 33.586], [-7.634, 33.584], [-7.63, 33.578], [-7.636, 33.572], [-7.646, 33.572], [-7.651, 33.577], [-7.65, 33.582]]]}}, {"type": "Feature", "properties": {"name": "Centre Ville"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.632, 33.597], [-7.623, 33.601], [-7.614, 33.599], [-7.609, 33.594], [-7.614, 33.588], [-7.624, 33.586], [-7.632, 33.589], [-7.632, 33.597]]]}}, {"type": "Feature", "properties": {"name": "Bourgogne"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.628, 33.592], [-7.621, 33.596], [-7.613, 33.594], [-7.61, 33.588], [-7.615, 33.583], [-7.623, 33.582], [-7.628, 33.586], [-7.628, 33.592]]]}}, {"type": "Feature", "properties": {"name": "Val Fleuri"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.638, 33.586], [-7.631, 33.59], [-7.622, 33.588], [-7.619, 33.583], [-7.624, 33.578], [-7.633, 33.577], [-7.639, 33.581], [-7.638, 33.586]]]}}, {"type": "Feature", "properties": {"name": "Palmier"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.622, 33.586], [-7.614, 33.588], [-7.607, 33.585], [-7.606, 33.579], [-7.612, 33.575], [-7.62, 33.576], [-7.623, 33.581], [-7.622, 33.586]]]}}, {"type": "Feature", "properties": {"name": "Belvedere"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.618, 33.594], [-7.61, 33.598], [-7.602, 33.596], [-7.598, 33.59], [-7.603, 33.585], [-7.611, 33.584], [-7.618, 33.588], [-7.618, 33.594]]]}}, {"type": "Feature", "properties": {"name": "CIL"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.617, 33.579], [-7.609, 33.583], [-7.601, 33.581], [-7.598, 33.575], [-7.603, 33.57], [-7.611, 33.569], [-7.617, 33.573], [-7.617, 33.579]]]}}, {"type": "Feature", "properties": {"name": "Oasis"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.649, 33.57], [-7.641, 33.574], [-7.632, 33.572], [-7.629, 33.566], [-7.635, 33.561], [-7.644, 33.561], [-7.65, 33.565], [-7.649, 33.57]]]}}, {"type": "Feature", "properties": {"name": "Hay Hassani"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.678, 33.562], [-7.668, 33.568], [-7.655, 33.567], [-7.649, 33.56], [-7.653, 33.552], [-7.665, 33.55], [-7.677, 33.554], [-7.678, 33.562]]]}}, {"type": "Feature", "properties": {"name": "Oulfa"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.668, 33.552], [-7.659, 33.557], [-7.647, 33.555], [-7.641, 33.548], [-7.646, 33.541], [-7.658, 33.54], [-7.668, 33.545], [-7.668, 33.552]]]}}, {"type": "Feature", "properties": {"name": "Sidi Maarouf"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.65, 33.549], [-7.64, 33.553], [-7.629, 33.55], [-7.625, 33.543], [-7.631, 33.537], [-7.642, 33.537], [-7.651, 33.542], [-7.65, 33.549]]]}}, {"type": "Feature", "properties": {"name": "Ain Chock"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.632, 33.57], [-7.623, 33.574], [-7.613, 33.572], [-7.609, 33.565], [-7.615, 33.56], [-7.624, 33.559], [-7.632, 33.563], [-7.632, 33.57]]]}}, {"type": "Feature", "properties": {"name": "Derb Sultan"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.618, 33.589], [-7.61, 33.592], [-7.602, 33.59], [-7.599, 33.584], [-7.605, 33.58], [-7.613, 33.579], [-7.619, 33.583], [-7.618, 33.589]]]}}, {"type": "Feature", "properties": {"name": "Hay Mohammadi"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.606, 33.597], [-7.598, 33.601], [-7.59, 33.599], [-7.586, 33.593], [-7.591, 33.587], [-7.599, 33.586], [-7.606, 33.59], [-7.606, 33.597]]]}}, {"type": "Feature", "properties": {"name": "Sbata"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.605, 33.584], [-7.597, 33.587], [-7.589, 33.585], [-7.586, 33.579], [-7.591, 33.574], [-7.599, 33.573], [-7.605, 33.577], [-7.605, 33.584]]]}}, {"type": "Feature", "properties": {"name": "Ben M'Sick"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.613, 33.575], [-7.605, 33.578], [-7.597, 33.576], [-7.594, 33.57], [-7.599, 33.565], [-7.607, 33.564], [-7.613, 33.568], [-7.613, 33.575]]]}}, {"type": "Feature", "properties": {"name": "Sidi Bernoussi"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.575, 33.606], [-7.565, 33.61], [-7.555, 33.609], [-7.549, 33.603], [-7.554, 33.597], [-7.564, 33.595], [-7.574, 33.599], [-7.575, 33.606]]]}}, {"type": "Feature", "properties": {"name": "Ain Sebaa"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.588, 33.61], [-7.578, 33.614], [-7.566, 33.613], [-7.559, 33.607], [-7.564, 33.601], [-7.575, 33.599], [-7.587, 33.603], [-7.588, 33.61]]]}}, {"type": "Feature", "properties": {"name": "Roches Noires"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.595, 33.603], [-7.587, 33.606], [-7.578, 33.604], [-7.574, 33.598], [-7.579, 33.593], [-7.588, 33.592], [-7.596, 33.596], [-7.595, 33.603]]]}}, {"type": "Feature", "properties": {"name": "Moulay Rachid"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.61, 33.564], [-7.601, 33.568], [-7.591, 33.566], [-7.587, 33.559], [-7.593, 33.554], [-7.602, 33.553], [-7.61, 33.557], [-7.61, 33.564]]]}}, {"type": "Feature", "properties": {"name": "Triangle d'Or"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.636, 33.596], [-7.629, 33.599], [-7.621, 33.597], [-7.618, 33.591], [-7.623, 33.587], [-7.631, 33.587], [-7.637, 33.591], [-7.636, 33.596]]]}}, {"type": "Feature", "properties": {"name": "Casa Anfa"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.662, 33.582], [-7.654, 33.586], [-7.645, 33.584], [-7.642, 33.577], [-7.648, 33.572], [-7.657, 33.572], [-7.663, 33.577], [-7.662, 33.582]]]}}, {"type": "Feature", "properties": {"name": "Sidi Belyout"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.628, 33.603], [-7.619, 33.607], [-7.61, 33.606], [-7.606, 33.599], [-7.611, 33.594], [-7.62, 33.593], [-7.628, 33.597], [-7.628, 33.603]]]}}, {"type": "Feature", "properties": {"name": "Hay Riad"}, "geometry": {"type": "Polygon", "coordinates": [[[-7.639, 33.563], [-7.63, 33.567], [-7.62, 33.565], [-7.616, 33.558], [-7.622, 33.553], [-7.632, 33.552], [-7.639, 33.557], [-7.639, 33.563]]]}}]};
+
+// ── Map ──────────────────────────────────────────────────────────────
+const map = L.map('map',{center:[33.575,-7.620],zoom:13,zoomControl:true,attributionControl:false});
+L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',{
+  maxZoom:19, subdomains:'abcd'
+}).addTo(map);
+
+// ── Tiers ─────────────────────────────────────────────────────────────
+const TIERS=[
+  {max:10000,  dot:'#2e8b4a'},{max:14000, dot:'#1a7055'},
+  {max:18000,  dot:'#b07d10'},{max:24000, dot:'#b85020'},
+  {max:Infinity,dot:'#a81818'},
+];
+function tier(pm2){return pm2?(TIERS.find(t=>pm2<t.max)||TIERS[4]):{dot:'#999'};}
+
+// ── State ─────────────────────────────────────────────────────────────
+let all=[], filtered=[], activeQ=null, activeCard=null;
+const dotLayer=L.layerGroup().addTo(map);
+
+// ── Toast ─────────────────────────────────────────────────────────────
+function showToast(msg, duration=3500){
+  const t=document.getElementById('toast');
+  t.textContent=msg; t.classList.add('on');
+  setTimeout(()=>t.classList.remove('on'), duration);
+}
+
+// ── Load data from data.json ──────────────────────────────────────────
+async function loadData(isRefresh=false){
+  const btn=document.getElementById('update-btn');
+  const loader=document.getElementById('panel-loader');
+  btn.classList.add('loading');
+  if(isRefresh){ loader.classList.add('on'); document.getElementById('panel').innerHTML=''; }
+
+  try {
+    // Cache-bust so the browser always fetches the latest file
+    const res = await fetch('data.json?t='+Date.now());
+    if(!res.ok) throw new Error('HTTP '+res.status);
+    const data = await res.json();
+
+    all = data.listings || [];
+    filtered = [...all];
+
+    // Update timestamp from meta or now
+    const ts = data.meta?.scraped_at
+      ? new Date(data.meta.scraped_at).toLocaleString('fr-FR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})
+      : new Date().toLocaleString('fr-FR',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});
+    document.getElementById('last-updated').textContent = '↻ ' + ts;
+
+    rebuildQuartierDropdown();
+    applyFilters();
+
+    if(isRefresh) showToast('✓ ' + all.length + ' annonces chargées');
+  } catch(err){
+    showToast('⚠ Erreur: impossible de charger data.json — ' + err.message, 5000);
+    console.error(err);
+    if(!all.length){
+      document.getElementById('panel').innerHTML =
+        '<div class="empty">Impossible de charger les données.<br>Vérifiez que data.json est présent.</div>';
+    }
+  } finally {
+    btn.classList.remove('loading');
+    loader.classList.remove('on');
+  }
+}
+
+// ── Quartier dropdown ─────────────────────────────────────────────────
+function rebuildQuartierDropdown(){
+  const selQ=document.getElementById('sel-q');
+  const prev=selQ.value;
+  selQ.innerHTML='<option value="">Tous les quartiers</option>';
+  const qs=[...new Set(all.map(l=>l.quartier).filter(Boolean))].sort();
+  qs.forEach(q=>{const o=document.createElement('option');o.value=q;o.textContent=q;selQ.appendChild(o);});
+  selQ.value=prev;
+}
+
+// ── Stats ─────────────────────────────────────────────────────────────
+function buildStats(listings){
+  const acc={};
+  listings.forEach(l=>{if(!l.quartier)return;(acc[l.quartier]=acc[l.quartier]||[]).push(l);});
+  const s={};
+  Object.entries(acc).forEach(([q,ls])=>{
+    const prices=ls.map(l=>l.price).filter(Boolean).sort((a,b)=>a-b);
+    const pm2s=ls.map(l=>l.price_m2).filter(Boolean).sort((a,b)=>a-b);
+    const avg=a=>a.length?Math.round(a.reduce((s,v)=>s+v,0)/a.length):null;
+    const med=a=>a.length?a[Math.floor(a.length/2)]:null;
+    s[q]={count:ls.length,priceMin:prices[0],priceMax:prices[prices.length-1],
+      priceMed:med(prices),pm2Avg:avg(pm2s),pm2Min:pm2s[0],pm2Max:pm2s[pm2s.length-1]};
+  });
+  return s;
+}
+
+// ── Format ─────────────────────────────────────────────────────────────
+function fP(p){if(!p)return'N/A';return p>=1e6?(p/1e6).toFixed(2)+' M DH':p.toLocaleString('fr-FR')+' DH';}
+function fM(v){return v?v.toLocaleString('fr-FR')+' DH/m²':'N/A';}
+
+// ── Select / clear quartier ───────────────────────────────────────────
+const selQ=document.getElementById('sel-q');
+selQ.onchange=()=>{const q=selQ.value;if(q)selectQuartier(q);else clearQ();};
+
+function selectQuartier(name,flyTo=true){
+  activeQ=name; selQ.value=name;
+  const st=buildStats(all)[name];
+  applyFilters();
+  document.getElementById('q-name').textContent=name;
+  document.getElementById('q-count').textContent=(st?.count||0)+' annonces';
+  document.getElementById('q-banner').classList.add('on');
+  document.getElementById('reset-btn').classList.add('on');
+  const feat=QUARTIER_GEO.features.find(f=>f.properties.name===name);
+  if(feat&&flyTo) map.flyToBounds(L.geoJSON(feat).getBounds().pad(0.3),{duration:.7,maxZoom:15});
+  if(st){
+    const center=feat?L.geoJSON(feat).getBounds().getCenter():[33.575,-7.62];
+    L.popup({maxWidth:230,offset:[0,-6]}).setLatLng(center)
+      .setContent(`<div class="qpop"><h3>${name}</h3><div class="rows">
+        <div class="row"><span>Annonces</span><span class="v">${st.count}</span></div>
+        <div class="row"><span>Prix médian</span><span class="v">${fP(st.priceMed)}</span></div>
+        <div class="row"><span>Min / Max</span><span class="v">${fP(st.priceMin)} – ${fP(st.priceMax)}</span></div>
+        <div class="row"><span>Moy. /m²</span><span class="v">${fM(st.pm2Avg)}</span></div>
+        <div class="row"><span>Min – Max /m²</span><span class="v">${fM(st.pm2Min)} – ${fM(st.pm2Max)}</span></div>
+      </div></div>`).openOn(map);
+  }
+}
+function clearQ(){
+  activeQ=null; selQ.value='';
+  document.getElementById('q-banner').classList.remove('on');
+  document.getElementById('reset-btn').classList.remove('on');
+  map.closePopup(); applyFilters();
+  map.flyTo([33.575,-7.620],13,{duration:.6});
+}
+function resetAll(){
+  document.getElementById('sel-rooms').value='';
+  document.getElementById('sel-price').value='';
+  document.getElementById('sel-surf').value='';
+  clearQ();
+}
+
+// ── Filters ──────────────────────────────────────────────────────────
+function applyFilters(){
+  const rooms  =document.getElementById('sel-rooms').value;
+  const priceV =document.getElementById('sel-price').value;
+  const surfV  =document.getElementById('sel-surf').value;
+  let pMin=0,pMax=Infinity,sMin=0,sMax=Infinity;
+  if(priceV){[pMin,pMax]=priceV.split('-').map(Number);}
+  if(surfV) {[sMin,sMax]=surfV.split('-').map(Number);}
+  filtered=all.filter(l=>{
+    if(activeQ&&l.quartier!==activeQ)return false;
+    if(rooms&&l.rooms!=+rooms)return false;
+    if((l.price||0)<pMin||(l.price||0)>pMax)return false;
+    if((l.surface||0)<sMin||(l.surface||0)>sMax)return false;
+    return true;
+  });
+  renderDots(); renderPanel();
+  document.getElementById('badge').textContent=filtered.length+' annonces';
+}
+['sel-rooms','sel-price','sel-surf'].forEach(id=>
+  document.getElementById(id).addEventListener('change',applyFilters));
+
+// ── Dots ─────────────────────────────────────────────────────────────
+function renderDots(){
+  dotLayer.clearLayers();
+  filtered.forEach(l=>{
+    if(!l.lat||!l.lng)return;
+    const t=tier(l.price_m2);
+    const icon=L.divIcon({className:'',
+      html:`<div class="dot" style="background:${t.dot}"></div>`,
+      iconSize:[8,8],iconAnchor:[4,4]});
+    const mk=L.marker([l.lat,l.lng],{icon,zIndexOffset:30}).addTo(dotLayer);
+    mk.bindTooltip(`${l.quartier||''} &middot; ${l.surface||'?'}m² &middot; ${fP(l.price)}`,{sticky:true});
+    mk.on('click',()=>{highlightCard(l.id);scrollCard(l.id);});
+  });
+}
+
+// ── Panel ─────────────────────────────────────────────────────────────
+function renderPanel(){
+  const panel=document.getElementById('panel');
+  panel.innerHTML='';
+  if(!filtered.length){panel.innerHTML='<div class="empty">Aucun résultat<br>Modifiez les filtres</div>';return;}
+  filtered.slice(0,150).forEach(l=>{
+    const t=tier(l.price_m2);
+    const d=document.createElement('div');
+    d.className='card'; d.dataset.id=l.id;
+    d.innerHTML=`<div class="tier-bar" style="background:${t.dot}"></div>
+      <div class="card-title">${l.title||(l.quartier+' · '+(l.surface||'?')+'m²')}</div>
+      <div class="card-tags">
+        <span class="tag p">${fP(l.price)}</span>
+        <span class="tag m">${l.price_m2?l.price_m2.toLocaleString('fr-FR')+' DH/m²':'?/m²'}</span>
+        <span class="tag">${l.surface||'?'} m²</span>
+        <span class="tag">${l.rooms||'?'} pcs</span>
+      </div>`;
+    d.onclick=()=>{highlightCard(l.id);if(l.lat&&l.lng)map.flyTo([l.lat,l.lng],16,{duration:.5});};
+    panel.appendChild(d);
+  });
+  if(filtered.length>150){
+    const m=document.createElement('div'); m.className='empty';
+    m.textContent=`+ ${filtered.length-150} autres (affinez les filtres)`;
+    panel.appendChild(m);
+  }
+}
+function highlightCard(id){
+  if(activeCard)activeCard.classList.remove('active');
+  activeCard=document.querySelector(`.card[data-id="${id}"]`);
+  if(activeCard)activeCard.classList.add('active');
+}
+function scrollCard(id){
+  const el=document.querySelector(`.card[data-id="${id}"]`);
+  if(el)el.scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+
+// ── Boot ─────────────────────────────────────────────────────────────
+loadData();
+</script>
+</body>
+</html>
