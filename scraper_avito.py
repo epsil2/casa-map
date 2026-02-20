@@ -18,14 +18,16 @@ Run:
     python scraper_avito.py --date all           # no date filter (default)
 """
 
-import json, re, time, random, argparse
+import os, json, re, time, random, argparse
 from datetime import datetime, timedelta, timezone
 from collections import Counter
 import requests
 from bs4 import BeautifulSoup
 
 # ── Config ──────────────────────────────────────────────────────────────────
-OUTPUT     = "data.json"
+#OUTPUT     = "data.json"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+OUTPUT     = os.path.join(SCRIPT_DIR, "data.json")
 BASE_URL   = "https://www.avito.ma/fr/maroc/appartements-%C3%A0_vendre"
 PARAMS     = "cities=13,5,8,90,12,15&price=100000-&has_price=true"
 PAGE_RANGE = range(1, 31)   # o=1 … o=30
