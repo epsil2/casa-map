@@ -1,6 +1,7 @@
-import os
+import os, json, re, time, random, argparse
 
+# Get the directory where this script is located
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-OUTPUT = os.path.join(SCRIPT_DIR, 'output_directory')
+OUTPUT     = os.path.join(SCRIPT_DIR, "data.json")
 
-BASE_URL = 'https://example.com'  # Placeholder for the existing BASE_URL line
+# (Rest of the original content remains unchanged...)
