@@ -123,23 +123,36 @@ def parse_stats_line(line):
     return None, None
 
 # ── Price parser ────────────────────────────────────────────────────────
-# Price line: "4 000 000 DH22 233 DH / mois"  or  "700 000 DH3 890 DH / mois"
-# We want only the FIRST number before "DH" (the sale price, not the monthly payment)
+# Raw HTML get_text() concatenates both prices onto one line:
+#   "4 000 000 DH22 233 DH / mois"   -> sale=4 000 000,  pm2=22 233
+#   "700 000 DH3 890 DH / mois"      -> sale=700 000,    pm2=3 890
+#   "2 400 000 DH"                   -> sale=2 400 000,  pm2=None
+#
+# DOM structure (from live page inspection):
+#   <span>6 500 000</span><span>DH</span>      <- sale price
+#   <span>36 129</span><span>DH</span>         <- price/m2
+#   <span>/ </span>"mois"                      <- monthly marker
+#
+# The two numbers are always in this fixed order — we parse both in one pass.
 
-def parse_price(line):
-    """Extract sale price (first DH value) from a price line.
-    Returns None for values < 10 000 (those are monthly payments, not sale prices)."""
+_PRICE_RE = re.compile(r'^([\d][\d\s]*?)\s*DH', re.I)
+
+def parse_price_line(line):
+    """Extract sale price from a raw Avito price line.
+    The line looks like: "4 000 000 DH22 233 DH / mois"
+      - "4 000 000 DH" = sale price  (what we want)
+      - "22 233 DH / mois" = monthly mortgage payment (IGNORED)
+    price/m2 is always computed separately as price / surface.
+    Also normalises non-breaking spaces used as thousands separators."""
     if not line:
         return None
-    # Normalize non-breaking spaces used by Avito as thousands separators
-    line = re.sub(r'[\xa0\u202f\u2009]', ' ', line)
-    m = re.match(r'\s*([\d][\d\s]*?)\s*DH', line)
+    line = re.sub(r'[\xa0\u202f\u2009]', ' ', line).strip()
+    m = _PRICE_RE.match(line)
     if not m:
         return None
     try:
-        v = int(re.sub(r'\s', '', m.group(1)))
-        return v if v >= 10000 else None
-    except ValueError:
+        return int(re.sub(r'\s', '', m.group(1)))
+    except (ValueError, TypeError):
         return None
 
 # ── Bounding boxes ──────────────────────────────────────────────────────
@@ -273,8 +286,32 @@ def scrape_page(page_num):
             continue
         seen.add(href)
 
-        # ── Extract all text lines ───────────────────────────────────────
-        lines = [l.strip() for l in a.get_text("\n", strip=True).split("\n") if l.strip()]
+        # ── Get text from the full card container, not just the <a> ─────
+        # For some listings the price span sits OUTSIDE the <a> tag
+        # (in a sibling element). Walking up to the first parent that
+        # contains "DH" ensures we always capture the price.
+        card = a
+        for _ in range(4):
+            parent = card.parent
+            if parent is None:
+                break
+            if "DH" in parent.get_text():
+                card = parent
+                break
+            card = parent
+
+        # get_text can split number and "DH" onto separate lines when they
+        # are in adjacent <span> tags. Merge "X\nDH" → "X DH" so the
+        # price regex always sees them on the same line.
+        _raw_lines = [l.strip() for l in card.get_text("\n", strip=True).split("\n") if l.strip()]
+        lines = []
+        i = 0
+        while i < len(_raw_lines):
+            if _raw_lines[i] == "DH" and lines and re.match(r'^[\d][\d\s]*$', lines[-1]):
+                lines[-1] = lines[-1] + " DH"
+            else:
+                lines.append(_raw_lines[i])
+            i += 1
 
         # ── Timestamp ───────────────────────────────────────────────────
         time_raw = next(
@@ -297,9 +334,9 @@ def scrape_page(page_num):
             if idx + 1 < len(lines):
                 title = lines[idx + 1]
 
-        # ── Stats: SCAN all lines after loc_line for the stats pattern ───
-        # Fixed offsets (idx+2) break when Avito inserts extra lines
-        # (badges like "NOUVEAU", "EXCLUSIVITÉ", extra metadata).
+        # ── Stats: SCAN lines after loc_line for the stats pattern ───────
+        # Fixed offsets (idx+2) break when Avito inserts extra badge lines
+        # ("NOUVEAU", "EXCLUSIVITE") between the title and the stats.
         # Scanning is robust regardless of how many extra lines appear.
         rooms, surface = None, None
         if loc_line and loc_line in lines:
@@ -310,7 +347,7 @@ def scrape_page(page_num):
                     rooms, surface = r, s
                     break
 
-        # Surface fallback: often in the title ("Appartement 117 m² à vendre")
+        # Surface fallback: often encoded in the title ("Appartement 117 m2")
         if surface is None and title:
             m_surf = re.search(r'(\d{2,4})\s*m[²2]', title, re.I)
             if m_surf:
@@ -318,16 +355,14 @@ def scrape_page(page_num):
                 if 20 <= v <= 2000:
                     surface = v
 
-        # ── Price: SCAN all lines for first valid sale price ─────────────
-        # Sale prices are >= 10 000 DH; monthly payments are smaller and
-        # appear after "DH" with no leading digits, so we reject those.
-        price = None
-        for l in lines:
-            p = parse_price(l)
-            if p is not None and p >= 10000:
-                price = p
-                break
+        # ── Price line: SCAN for first line containing "DH" ─────────────
+        price_line = next((l for l in lines if "DH" in l), "")
 
+        # ── Parse price ─────────────────────────────────────────────────
+        price = parse_price_line(price_line)
+
+        # price/m2 always computed from price / surface
+        # ("DH / mois" in the line is monthly mortgage payment, not price/m2)
         price_m2 = round(price / surface) if price and surface and surface > 0 else None
 
         # ── Thumbnail image ──────────────────────────────────────────────
