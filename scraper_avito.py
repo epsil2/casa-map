@@ -36,6 +36,7 @@ OUTPUT     = os.path.join(SCRIPT_DIR, "data.json")
 # Two property types scraped in sequence and merged
 SOURCES = {
     "appartement": {
+        "type":     "appartement",
         "base_url": "https://www.avito.ma/fr/maroc/appartements-%C3%A0_vendre",
         "params":   "cities=13,5,8,90,12,15&price=100000-&has_price=true",
         "href_re":  r'^https://www\.avito\.ma/fr/[^/]+/appartements/[^/]+\.htm$',
@@ -43,10 +44,11 @@ SOURCES = {
         "pages":    30,
     },
     "villa": {
+        "type":     "villa",
         "base_url": "https://www.avito.ma/fr/maroc/villas_riad-%C3%A0_vendre",
         "params":   "cities=5,90,116,15&price=500000-&has_price=true&has_image=true",
-        "href_re":  r'^https://www\.avito\.ma/fr/[^/]+/villas_riad/[^/]+\.htm$',
-        "loc_prefix": "Villas-Riad dans",
+        "href_re":  r'^https://www\.avito\.ma/fr/[^/]+/villas_et_riads/[^/]+\.htm$',
+        "loc_prefix": "Villas et Riads dans",
         "pages":    20,
     },
 }
@@ -279,7 +281,7 @@ def scrape_page(page_num, source):
     params     = source["params"]
     href_re    = re.compile(source["href_re"])
     loc_prefix = source["loc_prefix"]
-    prop_type  = "villa" if "villa" in base_url else "appartement"
+    prop_type  = source["type"]  # "appartement" or "villa"
     total_pages= source["pages"]
     url = f"{base_url}?o={page_num}&{params}"
     print(f"  Page {page_num:2d}/{total_pages}  →  {url}")
@@ -350,7 +352,7 @@ def scrape_page(page_num, source):
         # Villa cards say "Villas-Riad dans <City>, <Q>" — same pattern
         if loc_line is None:
             loc_line = next(
-                (l for l in lines if re.match(r"(Appartements|Villas[-–]Riad) dans", l)), None
+                (l for l in lines if re.match(r"(Appartements|Villas[- ]et[- ]Riads?) dans", l, re.I)), None
             )
         city     = city_from_location(loc_line)
         quartier = quartier_from_location(loc_line)
