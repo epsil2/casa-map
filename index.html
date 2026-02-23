@@ -276,7 +276,7 @@ function buildStats(listings){
 // ── Populate quartier dropdown (respects active type) ─────────────────
 const selQ=document.getElementById('sel-q');
 function rebuildQuartierDropdown(){
-  const subset=activeType==='all'?all:all.filter(l=>l.type===activeType);
+  const subset=activeType==='all'?all:all.filter(l=>(l.type||'appartement')===activeType);
   const stats=buildStats(subset);
   selQ.innerHTML='<option value="">Tous les quartiers</option>';
   Object.keys(stats).sort().forEach(q=>{
@@ -287,7 +287,7 @@ function rebuildQuartierDropdown(){
 rebuildQuartierDropdown();
 selQ.onchange=()=>{
   const q=selQ.value;
-  const subset=activeType==='all'?all:all.filter(l=>l.type===activeType);
+  const subset=activeType==='all'?all:all.filter(l=>(l.type||'appartement')===activeType);
   if(q) selectQuartier(q,buildStats(subset)[q]); else clearQ();
 };
 
@@ -343,7 +343,8 @@ function applyFilters(){
   if(priceV){[pMin,pMax]=priceV.split('-').map(Number);}
   if(surfV) {[sMin,sMax]=surfV.split('-').map(Number);}
   filtered=all.filter(l=>{
-    if(activeType!=='all'&&l.type!==activeType)return false;
+    const ltype=l.type||'appartement'; // backward compat: old data has no type field
+    if(activeType!=='all'&&ltype!==activeType)return false;
     if(activeQ&&l.quartier!==activeQ)return false;
     if(rooms&&l.rooms!=+rooms)return false;
     if((l.price||0)<pMin||(l.price||0)>pMax)return false;
@@ -362,7 +363,7 @@ function renderDots(){
   filtered.forEach(l=>{
     if(!l.lat||!l.lng)return;
     const t=tier(l.price_m2);
-    const isVilla=l.type==='villa';
+    const isVilla=(l.type||'appartement')==='villa';
     // Villas rendered as diamonds (rotated squares) to distinguish from apt dots
     const shape=isVilla
       ?`<div style="width:10px;height:10px;background:${t.dot};border:1.5px solid rgba(255,255,255,.9);transform:rotate(45deg);box-shadow:0 1px 4px rgba(0,0,0,.35)"></div>`
@@ -382,7 +383,7 @@ function renderPanel(){
   if(!filtered.length){panel.innerHTML='<div class="empty">Aucun résultat<br>Modifiez les filtres</div>';return;}
   filtered.slice(0,150).forEach(l=>{
     const t=tier(l.price_m2);
-    const isVilla=l.type==='villa';
+    const isVilla=(l.type||'appartement')==='villa';
     const d=document.createElement('div');
     d.className='card'; d.dataset.id=l.id;
     const typeTag=isVilla
