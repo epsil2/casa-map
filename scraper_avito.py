@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-Avito.ma Multi-City Apartment Scraper  v4
-==========================================
-URL : https://www.avito.ma/fr/maroc/appartements-à_vendre
-      ?o=N&cities=13,5,8,90,12,15&price=100000-&has_price=true
-Pages: o=1 → o=30
+Avito.ma Multi-City Scraper  v5
+================================
+Scrapes two property types and merges into one data.json:
+  • Appartements  → cities 13,5,8,90,12,15  (Casablanca, Agadir…)
+  • Villas / Riad → cities 5,90,116,15       (Agadir, Marrakech, Tanger, Rabat)
 
 Install:
     pip install requests beautifulsoup4
 
 Run:
-    python scraper_avito.py                  # all 30 pages
-    python scraper_avito.py --pages 3        # quick test, 3 pages
+    python scraper_avito.py                  # all pages, both types
+    python scraper_avito.py --pages 3        # quick test, 3 pages each
     python scraper_avito.py --date today     # today's listings only
     python scraper_avito.py --date week      # this calendar week
     python scraper_avito.py --date month     # this calendar month
@@ -32,9 +32,29 @@ from bs4 import BeautifulSoup
 # ── Config ──────────────────────────────────────────────────────────────────
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT     = os.path.join(SCRIPT_DIR, "data.json")
-BASE_URL   = "https://www.avito.ma/fr/maroc/appartements-%C3%A0_vendre"
-PARAMS     = "cities=13,5,8,90,12,15&price=100000-&has_price=true"
-PAGE_RANGE = range(1, 31)   # o=1 … o=30
+
+# Two property types scraped in sequence and merged
+SOURCES = {
+    "appartement": {
+        "base_url": "https://www.avito.ma/fr/maroc/appartements-%C3%A0_vendre",
+        "params":   "cities=13,5,8,90,12,15&price=100000-&has_price=true",
+        "href_re":  r'^https://www\.avito\.ma/fr/[^/]+/appartements/[^/]+\.htm$',
+        "loc_prefix": "Appartements dans",
+        "pages":    30,
+    },
+    "villa": {
+        "base_url": "https://www.avito.ma/fr/maroc/villas_riad-%C3%A0_vendre",
+        "params":   "cities=5,90,116,15&price=500000-&has_price=true&has_image=true",
+        "href_re":  r'^https://www\.avito\.ma/fr/[^/]+/villas_riad/[^/]+\.htm$',
+        "loc_prefix": "Villas-Riad dans",
+        "pages":    20,
+    },
+}
+
+# Keep for backward compat (used by scrape_page signature below)
+BASE_URL   = SOURCES["appartement"]["base_url"]
+PARAMS     = SOURCES["appartement"]["params"]
+PAGE_RANGE = range(1, 31)
 
 HEADERS = {
     "User-Agent": (
@@ -253,13 +273,16 @@ def coords_for(quartier, city):
     return round(random.uniform(a, b), 6), round(random.uniform(c, d), 6)
 
 # ── Scrape one page ─────────────────────────────────────────────────────
-LISTING_HREF_RE = re.compile(
-    r'^https://www\.avito\.ma/fr/[^/]+/appartements/[^/]+\.htm$'
-)
-
-def scrape_page(page_num):
-    url = f"{BASE_URL}?o={page_num}&{PARAMS}"
-    print(f"  Page {page_num:2d}/30  →  {url}")
+def scrape_page(page_num, source):
+    """Scrape one page for the given source config dict."""
+    base_url   = source["base_url"]
+    params     = source["params"]
+    href_re    = re.compile(source["href_re"])
+    loc_prefix = source["loc_prefix"]
+    prop_type  = "villa" if "villa" in base_url else "appartement"
+    total_pages= source["pages"]
+    url = f"{base_url}?o={page_num}&{params}"
+    print(f"  Page {page_num:2d}/{total_pages}  →  {url}")
 
     for attempt in range(4):
         try:
@@ -275,7 +298,7 @@ def scrape_page(page_num):
         return []
 
     soup = BeautifulSoup(resp.text, "html.parser")
-    anchors = soup.find_all("a", href=LISTING_HREF_RE)
+    anchors = soup.find_all("a", href=href_re)
 
     seen = set()
     listings = []
@@ -322,8 +345,13 @@ def scrape_page(page_num):
 
         # ── Location line → city + quartier ─────────────────────────────
         loc_line = next(
-            (l for l in lines if l.startswith("Appartements dans")), None
+            (l for l in lines if l.startswith(loc_prefix)), None
         )
+        # Villa cards say "Villas-Riad dans <City>, <Q>" — same pattern
+        if loc_line is None:
+            loc_line = next(
+                (l for l in lines if re.match(r"(Appartements|Villas[-–]Riad) dans", l)), None
+            )
         city     = city_from_location(loc_line)
         quartier = quartier_from_location(loc_line)
 
@@ -375,6 +403,7 @@ def scrape_page(page_num):
 
         listings.append({
             "title":        title,
+            "type":         prop_type,
             "city":         city,
             "quartier":     quartier,
             "lat":          lat,
@@ -397,31 +426,39 @@ def scrape_page(page_num):
 
 # ── Main ────────────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(description="Avito.ma scraper v4")
+    parser = argparse.ArgumentParser(description="Avito.ma scraper v5")
     parser.add_argument("--pages", type=int, default=None,
-                        help="Number of pages (default: 30)")
+                        help="Pages per property type (default: as configured per type)")
     parser.add_argument("--date", choices=["today","week","month","all"],
                         default="all",
                         help="Date filter (default: all)")
+    parser.add_argument("--type", choices=["all","appartement","villa"],
+                        default="all", dest="ptype",
+                        help="Property type to scrape (default: all)")
     args = parser.parse_args()
 
-    pages = range(1, (args.pages or 30) + 1)
-
     print("=" * 62)
-    print("  Avito.ma Scraper v4  |  requests + BeautifulSoup")
-    print(f"  URL    : {BASE_URL}?o=N&{PARAMS}")
-    print(f"  Pages  : o={pages.start} → o={pages.stop-1}  ({len(pages)} pages)")
-    print(f"  Filter : date={args.date}")
+    print("  Avito.ma Scraper v5  |  requests + BeautifulSoup")
+    print(f"  Types  : {args.ptype}  |  Date filter: {args.date}")
     print("=" * 62)
 
     all_listings = []
 
-    for page_num in pages:
-        batch = scrape_page(page_num)
-        all_listings.extend(batch)
-        print(f"  Running total: {len(all_listings)}")
-        if page_num < pages.stop - 1:
-            time.sleep(random.uniform(1.5, 3.0))
+    for ptype, source in SOURCES.items():
+        if args.ptype != "all" and args.ptype != ptype:
+            continue
+        n_pages = args.pages or source["pages"]
+        pages   = range(1, n_pages + 1)
+        print(f"\n{'─'*62}")
+        print(f"  [{ptype.upper()}]  {source['base_url']}")
+        print(f"  Pages: 1 → {n_pages}")
+        print(f"{'─'*62}")
+        for page_num in pages:
+            batch = scrape_page(page_num, source)
+            all_listings.extend(batch)
+            print(f"  Running total: {len(all_listings)}")
+            if page_num < pages.stop - 1:
+                time.sleep(random.uniform(1.5, 3.0))
 
     # ── Date filter ─────────────────────────────────────────────────────
     cutoff = date_boundary(args.date)
@@ -447,10 +484,11 @@ def main():
         print(f"    {(city or 'Unknown'):20s}: {count}")
     print(f"\n  Null values  →  price: {null_price} | surface: {null_surface} | rooms: {null_rooms}")
 
+    type_counts = Counter(l.get("type","?") for l in all_listings)
     output = {
         "meta": {
             "source":      "avito.ma",
-            "url":         f"{BASE_URL}?{PARAMS}",
+            "types":       dict(type_counts),
             "cities":      ["Casablanca","Agadir","Marrakech","Tanger","Rabat","Mohammedia"],
             "date_filter": args.date,
             "total":       len(all_listings),
@@ -463,7 +501,7 @@ def main():
         json.dump(output, f, ensure_ascii=False, indent=2)
 
     print(f"\n{'='*62}")
-    print(f"  DONE — {len(all_listings)} listings → {OUTPUT}")
+    print(f"  DONE — {len(all_listings)} listings ({dict(type_counts)}) → {OUTPUT}")
     print(f"  Copy data.json next to index.html and refresh the map.")
     print(f"{'='*62}")
 
