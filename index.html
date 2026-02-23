@@ -146,6 +146,10 @@ select:focus{outline:none;border-color:var(--accent)}
       </div>
     </div>
     <div class="fg">
+      <label>Ville</label>
+      <select id="sel-city"><option value="">Toutes les villes</option></select>
+    </div>
+    <div class="fg">
       <label>Quartier</label>
       <select id="sel-q"><option value="">Tous les quartiers</option></select>
     </div>
@@ -248,6 +252,7 @@ document.querySelectorAll('.tt-btn').forEach(btn=>{
     document.querySelectorAll('.tt-btn').forEach(b=>b.classList.remove('on'));
     btn.classList.add('on');
     activeType=btn.dataset.type;
+    rebuildCityDropdown();
     rebuildQuartierDropdown();
     applyFilters();
     // Update subtitle
@@ -273,10 +278,31 @@ function buildStats(listings){
   return s;
 }
 
-// ── Populate quartier dropdown (respects active type) ─────────────────
+// ── Populate city dropdown (respects active type) ────────────────────
+const selCity=document.getElementById('sel-city');
+function rebuildCityDropdown(){
+  const subset=activeType==='all'?all:all.filter(l=>(l.type||'appartement')===activeType);
+  const cities=[...new Set(subset.map(l=>l.city).filter(Boolean))].sort();
+  selCity.innerHTML='<option value="">Toutes les villes</option>';
+  cities.forEach(c=>{
+    const o=document.createElement('option'); o.value=c; o.textContent=c; selCity.appendChild(o);
+  });
+  selCity.value='';
+}
+rebuildCityDropdown();
+selCity.addEventListener('change', ()=>{
+  activeQ=null; selQ.value='';
+  document.getElementById('q-banner').classList.remove('on');
+  rebuildQuartierDropdown();
+  applyFilters();
+});
+
+// ── Populate quartier dropdown (respects active type + city) ──────────
 const selQ=document.getElementById('sel-q');
 function rebuildQuartierDropdown(){
-  const subset=activeType==='all'?all:all.filter(l=>(l.type||'appartement')===activeType);
+  const city=selCity.value;
+  const subset=(activeType==='all'?all:all.filter(l=>(l.type||'appartement')===activeType))
+    .filter(l=>!city||l.city===city);
   const stats=buildStats(subset);
   selQ.innerHTML='<option value="">Tous les quartiers</option>';
   Object.keys(stats).sort().forEach(q=>{
@@ -287,7 +313,9 @@ function rebuildQuartierDropdown(){
 rebuildQuartierDropdown();
 selQ.onchange=()=>{
   const q=selQ.value;
-  const subset=activeType==='all'?all:all.filter(l=>(l.type||'appartement')===activeType);
+  const city=selCity.value;
+  const subset=(activeType==='all'?all:all.filter(l=>(l.type||'appartement')===activeType))
+    .filter(l=>!city||l.city===city);
   if(q) selectQuartier(q,buildStats(subset)[q]); else clearQ();
 };
 
@@ -330,7 +358,9 @@ function resetAll(){
   document.getElementById('sel-rooms').value='';
   document.getElementById('sel-price').value='';
   document.getElementById('sel-surf').value='';
+  rebuildCityDropdown();
   rebuildQuartierDropdown();
+  selCity.value='';
   clearQ();
 }
 
@@ -339,12 +369,14 @@ function applyFilters(){
   const rooms  =document.getElementById('sel-rooms').value;
   const priceV =document.getElementById('sel-price').value;
   const surfV  =document.getElementById('sel-surf').value;
+  const cityV  =selCity?selCity.value:'';
   let pMin=0,pMax=Infinity,sMin=0,sMax=Infinity;
   if(priceV){[pMin,pMax]=priceV.split('-').map(Number);}
   if(surfV) {[sMin,sMax]=surfV.split('-').map(Number);}
   filtered=all.filter(l=>{
     const ltype=l.type||'appartement'; // backward compat: old data has no type field
     if(activeType!=='all'&&ltype!==activeType)return false;
+    if(cityV&&l.city!==cityV)return false;
     if(activeQ&&l.quartier!==activeQ)return false;
     if(rooms&&l.rooms!=+rooms)return false;
     if((l.price||0)<pMin||(l.price||0)>pMax)return false;
@@ -393,6 +425,7 @@ function renderPanel(){
       <div class="card-title">${l.title||(l.quartier+' · '+(l.surface||'?')+'m²')}</div>
       <div class="card-tags">
         ${typeTag}
+        ${l.city?`<span class="tag" style="background:#f5f0ff;border-color:#c8b8f0;color:#6040b0">${l.city}</span>`:''}
         <span class="tag p">${fP(l.price)}</span>
         <span class="tag m">${l.price_m2?l.price_m2.toLocaleString('fr-FR')+' DH/m²':'?/m²'}</span>
         <span class="tag">${l.surface||'?'} m²</span>

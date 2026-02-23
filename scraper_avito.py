@@ -105,9 +105,13 @@ CITY_TEXT_MAP = {
     "salé": "Rabat", "sale": "Rabat",
 }
 
+# Matches both:
+#   "Appartements dans Casablanca, Gauthier"
+#   "Villas et Riads dans Tanger, Val Fleuri"
+_LOC_RE = re.compile(r"^(?:Appartements|Villas?\s+et\s+Riads?)\s+dans\s+([^,]+)(?:,\s*(.+))?$", re.I)
+
 def city_from_location(loc):
-    """'Appartements dans Casablanca, Gauthier' → 'Casablanca'"""
-    m = re.match(r"Appartements dans ([^,]+)", loc or "")
+    m = _LOC_RE.match(loc or "")
     if not m:
         return None
     raw = m.group(1).strip().lower()
@@ -117,9 +121,10 @@ def city_from_location(loc):
     return m.group(1).strip().title()
 
 def quartier_from_location(loc):
-    """'Appartements dans Casablanca, Gauthier' → 'Gauthier'"""
-    m = re.match(r"Appartements dans [^,]+,\s*(.+)", loc or "")
-    return m.group(1).strip().title() if m else None
+    m = _LOC_RE.match(loc or "")
+    if not m or not m.group(2):
+        return None
+    return m.group(2).strip().title()
 
 # ── Core stats-line parser ──────────────────────────────────────────────
 # Avito renders property details as a single line:
@@ -347,13 +352,10 @@ def scrape_page(page_num, source):
 
         # ── Location line → city + quartier ─────────────────────────────
         loc_line = next(
-            (l for l in lines if l.startswith(loc_prefix)), None
+            (l for l in lines if re.match(
+                r"^(?:Appartements|Villas?\s+et\s+Riads?)\s+dans\s+", l, re.I
+            )), None
         )
-        # Villa cards say "Villas-Riad dans <City>, <Q>" — same pattern
-        if loc_line is None:
-            loc_line = next(
-                (l for l in lines if re.match(r"(Appartements|Villas[- ]et[- ]Riads?) dans", l, re.I)), None
-            )
         city     = city_from_location(loc_line)
         quartier = quartier_from_location(loc_line)
 
