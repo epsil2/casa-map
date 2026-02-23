@@ -23,14 +23,13 @@ Stats line format on Avito:
     "3 4 6"        →  rooms=3, baths=4, no surface
 """
 
-import json, re, time, random, argparse
+import json, os, re, time, random, argparse
 from datetime import datetime, timedelta, timezone
 from collections import Counter
 import requests
 from bs4 import BeautifulSoup
 
-# ── Config ─────────────────────────────────────────────────────────────
-#OUTPUT     = "data.json"
+# ── Config ──────────────────────────────────────────────────────────────────
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 OUTPUT     = os.path.join(SCRIPT_DIR, "data.json")
 BASE_URL   = "https://www.avito.ma/fr/maroc/appartements-%C3%A0_vendre"
@@ -107,7 +106,7 @@ def quartier_from_location(loc):
 #   "3 4 6"        →  [rooms] [baths] [photo_count]  (no surface)
 #   "1 1 2"        →  [rooms] [baths] [photo_count]  (no surface)
 
-STATS_WITH_SURF = re.compile(r'^(\d+)\s+(\d+)\s+(\d+)\s*m[²2]\d*\s*$', re.I)
+STATS_WITH_SURF = re.compile(r'^(\d+)\s+(\d+)\s+(\d+)\s*m[²2]\s*\d*\s*$', re.I)
 STATS_NO_SURF   = re.compile(r'^(\d+)\s+(\d+)\s+\d+\s*$')
 
 def parse_stats_line(line):
@@ -128,14 +127,18 @@ def parse_stats_line(line):
 # We want only the FIRST number before "DH" (the sale price, not the monthly payment)
 
 def parse_price(line):
-    """Extract sale price (first DH value) from a price line."""
+    """Extract sale price (first DH value) from a price line.
+    Returns None for values < 10 000 (those are monthly payments, not sale prices)."""
     if not line:
         return None
+    # Normalize non-breaking spaces used by Avito as thousands separators
+    line = re.sub(r'[\xa0\u202f\u2009]', ' ', line)
     m = re.match(r'\s*([\d][\d\s]*?)\s*DH', line)
     if not m:
         return None
     try:
-        return int(re.sub(r'\s', '', m.group(1)))
+        v = int(re.sub(r'\s', '', m.group(1)))
+        return v if v >= 10000 else None
     except ValueError:
         return None
 
@@ -287,39 +290,44 @@ def scrape_page(page_num):
         city     = city_from_location(loc_line)
         quartier = quartier_from_location(loc_line)
 
-        # ── Locate the stats line (always 2 lines after loc_line) ────────
-        #    loc_line  → "Appartements dans Casablanca, Gauthier"
-        #    +1        → "SUPERBE APPARTEMENT TRÈS HAUT STANDING GAUTHIER"  (title)
-        #    +2        → "3 3 187 m²2"  (stats)
-        #    +3        → "4 000 000 DH22 233 DH / mois"  (price)
-        title      = ""
-        stats_line = ""
-        price_line = ""
-
+        # ── Title: first line after loc_line ────────────────────────────
+        title = ""
         if loc_line and loc_line in lines:
             idx = lines.index(loc_line)
             if idx + 1 < len(lines):
                 title = lines[idx + 1]
-            if idx + 2 < len(lines):
-                stats_line = lines[idx + 2]
-            if idx + 3 < len(lines):
-                price_line = lines[idx + 3]
 
-        # Fallback: grab price from any line containing "DH"
-        if not price_line or "DH" not in price_line:
-            price_line = next((l for l in lines if "DH" in l), "")
+        # ── Stats: SCAN all lines after loc_line for the stats pattern ───
+        # Fixed offsets (idx+2) break when Avito inserts extra lines
+        # (badges like "NOUVEAU", "EXCLUSIVITÉ", extra metadata).
+        # Scanning is robust regardless of how many extra lines appear.
+        rooms, surface = None, None
+        if loc_line and loc_line in lines:
+            idx = lines.index(loc_line)
+            for l in lines[idx + 1:]:
+                r, s = parse_stats_line(l)
+                if r is not None:
+                    rooms, surface = r, s
+                    break
 
-        # ── Parse stats line → rooms + surface ──────────────────────────
-        rooms, surface = parse_stats_line(stats_line)
-
-        # Fallback: surface sometimes appears in the title ("63 m²")
-        if surface is None:
-            m_surf = re.search(r'(\d{2,3})\s*m[²2]', title, re.I)
+        # Surface fallback: often in the title ("Appartement 117 m² à vendre")
+        if surface is None and title:
+            m_surf = re.search(r'(\d{2,4})\s*m[²2]', title, re.I)
             if m_surf:
-                surface = int(m_surf.group(1))
+                v = int(m_surf.group(1))
+                if 20 <= v <= 2000:
+                    surface = v
 
-        # ── Parse price ─────────────────────────────────────────────────
-        price    = parse_price(price_line)
+        # ── Price: SCAN all lines for first valid sale price ─────────────
+        # Sale prices are >= 10 000 DH; monthly payments are smaller and
+        # appear after "DH" with no leading digits, so we reject those.
+        price = None
+        for l in lines:
+            p = parse_price(l)
+            if p is not None and p >= 10000:
+                price = p
+                break
+
         price_m2 = round(price / surface) if price and surface and surface > 0 else None
 
         # ── Thumbnail image ──────────────────────────────────────────────
