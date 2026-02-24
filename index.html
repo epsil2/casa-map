@@ -518,7 +518,7 @@ function openDetail(l){
   const panel=document.getElementById('detail-panel');
   const carousel=document.getElementById('detail-carousel');
   const body=document.getElementById('detail-body');
-  const images=l.images||[];
+  const images=(l.images||[]).map(u=>u.replace('?t=images','?t=image_gallery'));
   const realLink=l.link||'';
   const timeText=l.time_text||'';
   const publishedAt=l.published_at||'';
@@ -581,9 +581,33 @@ function openDetail(l){
   scrollCard(l.id);
 }
 
+
+function imgRetry(el){
+  const src=el.src;
+  if(src.includes('?t=image_gallery')){
+    // Try original ?t=images
+    el.onerror=function(){imgFail(this);};
+    el.src=src.replace('?t=image_gallery','?t=images');
+  } else if(src.includes('?t=images')){
+    // Try without param
+    el.onerror=function(){imgFail(this);};
+    el.src=src.split('?')[0];
+  } else {
+    imgFail(el);
+  }
+}
+function imgFail(el){
+  el.onerror=null;
+  el.style.display='none';
+  const d=document.createElement('div');
+  d.className='no-img';
+  d.innerHTML='Image non disponible';
+  el.parentElement.appendChild(d);
+}
+
 function renderCarousel(container,images){
   container.innerHTML=`
-    <img id="carousel-img" src="${images[0]}" alt="Photo annonce" onerror="this.parentElement.innerHTML='<div class=\'no-img\'>Image non disponible</div>'" />
+    <img id="carousel-img" src="${images[0]}" alt="Photo annonce" referrerpolicy="no-referrer" onerror="imgRetry(this)" />
     ${images.length>1?`
       <button class="carousel-btn prev" onclick="carouselPrev()">‹</button>
       <button class="carousel-btn next" onclick="carouselNext()">›</button>
