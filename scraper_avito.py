@@ -53,10 +53,7 @@ SOURCES = {
     },
 }
 
-# Keep for backward compat (used by scrape_page signature below)
-BASE_URL   = SOURCES["appartement"]["base_url"]
-PARAMS     = SOURCES["appartement"]["params"]
-PAGE_RANGE = range(1, 31)
+# (removed unused backward-compat globals BASE_URL, PARAMS, PAGE_RANGE)
 
 HEADERS = {
     "User-Agent": (
@@ -87,10 +84,17 @@ def date_boundary(mode):
 _REL_RE = re.compile(r"il y a\s+(\d+)\s+(minute|heure|jour|semaine|mois)s?", re.I)
 
 def parse_relative_date(text):
+    if not text:
+        return None
     now = datetime.now(timezone.utc)
-    m = _REL_RE.search(text or "")
+    # Handle "Aujourd'hui" (today) and "Hier" (yesterday)
+    if re.search(r"aujourd.?hui", text, re.I):
+        return now.replace(hour=12, minute=0, second=0, microsecond=0)
+    if re.search(r"\bhier\b", text, re.I):
+        return (now - timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0)
+    m = _REL_RE.search(text)
     if not m:
-        return now
+        return None
     n, unit = int(m.group(1)), m.group(2).lower()
     deltas = {"minute": timedelta(minutes=n), "heure": timedelta(hours=n),
               "jour": timedelta(days=n), "semaine": timedelta(weeks=n),
@@ -132,9 +136,18 @@ def quartier_from_location(loc):
 #   "2 1 63 m²0"   →  [rooms] [baths] [surface]m²[photo_count]
 #   "3 4 6"        →  [rooms] [baths] [photo_count]  (no surface)
 #   "1 1 2"        →  [rooms] [baths] [photo_count]  (no surface)
+#
+# BUT: Avito may also render each stat as a SEPARATE <span>, which
+# means get_text("\n") splits them into individual lines:
+#   "3"  "2"  "187 m²"  "4"
+# Or group them differently. We need to handle BOTH formats.
 
 STATS_WITH_SURF = re.compile(r'^(\d+)\s+(\d+)\s+(\d+)\s*m[²2]\s*\d*\s*$', re.I)
 STATS_NO_SURF   = re.compile(r'^(\d+)\s+(\d+)\s+\d+\s*$')
+# Pattern for surface on its own line (e.g., "187 m²" or "187m²")
+SURF_ALONE      = re.compile(r'^(\d+)\s*m[²2]$', re.I)
+# Pattern for a bare small integer (potential rooms count: 1-20)
+BARE_INT        = re.compile(r'^(\d{1,2})$')
 
 def parse_stats_line(line):
     """Return (rooms, surface) from the Avito stats line."""
@@ -148,6 +161,46 @@ def parse_stats_line(line):
     if m:
         return int(m.group(1)), None
     return None, None
+
+def parse_stats_from_lines(lines, start_idx):
+    """Scan lines after start_idx for rooms and surface.
+    Handles both single-line ("3 2 187 m²4") and split formats.
+    Returns (rooms, surface)."""
+    rooms, surface = None, None
+    
+    # First: try the original single-line approach
+    for l in lines[start_idx:]:
+        r, s = parse_stats_line(l)
+        if r is not None:
+            return r, s
+    
+    # Fallback: scan for split format — look for "X m²" line and
+    # preceding bare integers that could be rooms/baths
+    bare_ints = []
+    for i, l in enumerate(lines[start_idx:], start_idx):
+        l = l.strip()
+        m_surf = SURF_ALONE.match(l)
+        if m_surf:
+            surface = int(m_surf.group(1))
+            if 10 <= surface <= 5000:
+                # The bare integers collected before this line are
+                # likely rooms and baths (in order)
+                if bare_ints:
+                    rooms = bare_ints[0]  # first int = rooms
+                return rooms, surface
+        m_int = BARE_INT.match(l)
+        if m_int:
+            v = int(m_int.group(1))
+            if 1 <= v <= 20:
+                bare_ints.append(v)
+            else:
+                bare_ints = []  # reset if we see a number > 20 (price fragment, etc.)
+        elif not m_int and not re.match(r'^(NOUVEAU|EXCLUSIVIT|PRO|URGENT|TOP)', l, re.I):
+            # Non-numeric, non-badge line → reset bare_int collection
+            if bare_ints and len(bare_ints) < 2:
+                bare_ints = []
+    
+    return rooms, surface
 
 # ── Price parser ────────────────────────────────────────────────────────
 # Raw HTML get_text() concatenates both prices onto one line:
@@ -280,7 +333,7 @@ def coords_for(quartier, city):
     return round(random.uniform(a, b), 6), round(random.uniform(c, d), 6)
 
 # ── Scrape one page ─────────────────────────────────────────────────────
-def scrape_page(page_num, source):
+def scrape_page(page_num, source, global_seen=None):
     """Scrape one page for the given source config dict."""
     base_url   = source["base_url"]
     params     = source["params"]
@@ -290,6 +343,9 @@ def scrape_page(page_num, source):
     total_pages= source["pages"]
     url = f"{base_url}?o={page_num}&{params}"
     print(f"  Page {page_num:2d}/{total_pages}  →  {url}")
+
+    if global_seen is None:
+        global_seen = set()
 
     for attempt in range(4):
         try:
@@ -307,28 +363,35 @@ def scrape_page(page_num, source):
     soup = BeautifulSoup(resp.text, "html.parser")
     anchors = soup.find_all("a", href=href_re)
 
-    seen = set()
     listings = []
 
     for a in anchors:
         href = a.get("href", "")
-        if "immoneuf" in href or href in seen:
+        if "immoneuf" in href or href in global_seen:
             continue
-        seen.add(href)
+        global_seen.add(href)
 
         # ── Get text from the full card container, not just the <a> ─────
         # For some listings the price span sits OUTSIDE the <a> tag
         # (in a sibling element). Walking up to the first parent that
         # contains "DH" ensures we always capture the price.
+        # FIX: Check 'a' itself first; only walk up if needed.
         card = a
-        for _ in range(4):
-            parent = card.parent
-            if parent is None:
-                break
-            if "DH" in parent.get_text():
+        if "DH" not in a.get_text():
+            for _ in range(3):
+                parent = card.parent
+                if parent is None:
+                    break
+                parent_text = parent.get_text()
+                if "DH" in parent_text:
+                    # Avoid going too high: if parent has many listing links,
+                    # we've gone past the card boundary
+                    child_links = parent.find_all("a", href=href_re)
+                    if len(child_links) > 1:
+                        break  # too high — stay at current card level
+                    card = parent
+                    break
                 card = parent
-                break
-            card = parent
 
         # get_text can split number and "DH" onto separate lines when they
         # are in adjacent <span> tags. Merge "X\nDH" → "X DH" so the
@@ -345,10 +408,10 @@ def scrape_page(page_num, source):
 
         # ── Timestamp ───────────────────────────────────────────────────
         time_raw = next(
-            (l for l in lines if re.search(r'il y a\s+\d+', l, re.I)), ""
+            (l for l in lines if re.search(r'il y a\s+\d+|aujourd.?hui|\bhier\b', l, re.I)), ""
         )
         pub_dt  = parse_relative_date(time_raw)
-        pub_iso = pub_dt.isoformat(timespec="seconds")
+        pub_iso = pub_dt.isoformat(timespec="seconds") if pub_dt else ""
 
         # ── Location line → city + quartier ─────────────────────────────
         loc_line = next(
@@ -370,22 +433,30 @@ def scrape_page(page_num, source):
         # Fixed offsets (idx+2) break when Avito inserts extra badge lines
         # ("NOUVEAU", "EXCLUSIVITE") between the title and the stats.
         # Scanning is robust regardless of how many extra lines appear.
+        # Uses both single-line and split-format parsing.
         rooms, surface = None, None
         if loc_line and loc_line in lines:
             idx = lines.index(loc_line)
-            for l in lines[idx + 1:]:
-                r, s = parse_stats_line(l)
-                if r is not None:
-                    rooms, surface = r, s
-                    break
+            rooms, surface = parse_stats_from_lines(lines, idx + 1)
 
         # Surface fallback: often encoded in the title ("Appartement 117 m2")
         if surface is None and title:
             m_surf = re.search(r'(\d{2,4})\s*m[²2]', title, re.I)
             if m_surf:
                 v = int(m_surf.group(1))
-                if 20 <= v <= 2000:
+                if 20 <= v <= 5000:
                     surface = v
+
+        # Rooms fallback: extract from title patterns like
+        # "Appartement 3 chambres", "3 pièces", "F3", "T4"
+        if rooms is None and title:
+            m_rooms = re.search(r'(\d{1,2})\s*(?:pièces?|chambres?|ch\b|pi[eè]ces?)', title, re.I)
+            if not m_rooms:
+                m_rooms = re.search(r'\b[FTft](\d{1,2})\b', title)
+            if m_rooms:
+                v = int(m_rooms.group(1))
+                if 1 <= v <= 20:
+                    rooms = v
 
         # ── Price line: SCAN for first line containing "DH" ─────────────
         price_line = next((l for l in lines if "DH" in l), "")
@@ -397,11 +468,25 @@ def scrape_page(page_num, source):
         # ("DH / mois" in the line is monthly mortgage payment, not price/m2)
         price_m2 = round(price / surface) if price and surface and surface > 0 else None
 
-        # ── Thumbnail image ──────────────────────────────────────────────
-        img = a.find("img", src=re.compile(r'content\.avito\.ma/classifieds'))
-        if not img:
-            img = a.find("img", attrs={"data-src": re.compile(r'content\.avito\.ma')})
-        img_src = (img.get("src") or img.get("data-src") or "") if img else ""
+        # ── Thumbnail image(s) ─────────────────────────────────────────────
+        # FIX: Extract ALL images from the card, not just the first one.
+        # Also check data-src and data-lazy for lazy-loaded images.
+        img_srcs = []
+        img_seen = set()
+        for img in a.find_all("img"):
+            src = (img.get("src") or img.get("data-src") or
+                   img.get("data-lazy") or "")
+            if "content.avito.ma/classifieds" in src and src not in img_seen:
+                img_srcs.append(src)
+                img_seen.add(src)
+        # Also check card (parent) if no images found inside the <a> tag
+        if not img_srcs:
+            for img in card.find_all("img"):
+                src = (img.get("src") or img.get("data-src") or
+                       img.get("data-lazy") or "")
+                if "content.avito.ma/classifieds" in src and src not in img_seen:
+                    img_srcs.append(src)
+                    img_seen.add(src)
 
         lat, lng = coords_for(quartier, city)
 
@@ -418,7 +503,7 @@ def scrape_page(page_num, source):
             "price_m2":     price_m2,
             "location":     loc_line or "",
             "link":         href,
-            "images":       [img_src] if img_src else [],
+            "images":       img_srcs,
             "published_at": pub_iso,
             "time_text":    time_raw,
             "scraped_at":   datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -447,6 +532,7 @@ def main():
     print("=" * 62)
 
     all_listings = []
+    global_seen = set()          # ← FIX: dedup across ALL pages & types
 
     for ptype, source in SOURCES.items():
         if args.ptype != "all" and args.ptype != ptype:
@@ -458,7 +544,7 @@ def main():
         print(f"  Pages: 1 → {n_pages}")
         print(f"{'─'*62}")
         for page_num in pages:
-            batch = scrape_page(page_num, source)
+            batch = scrape_page(page_num, source, global_seen)
             all_listings.extend(batch)
             print(f"  Running total: {len(all_listings)}")
             if page_num < pages.stop - 1:
@@ -470,7 +556,7 @@ def main():
         before = len(all_listings)
         all_listings = [
             l for l in all_listings
-            if datetime.fromisoformat(l["published_at"]) >= cutoff
+            if l["published_at"] and datetime.fromisoformat(l["published_at"]) >= cutoff
         ]
         print(f"\n  Date filter '{args.date}': {before} → {len(all_listings)} kept")
 
